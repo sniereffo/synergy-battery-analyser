@@ -230,6 +230,10 @@ body::before {
     gap: 20px;
 }
 
+.setup-grid > .card {
+    min-width: 0;
+}
+
 @media (max-width: 768px) {
     .setup-grid { grid-template-columns: 1fr; }
 }
@@ -320,6 +324,7 @@ body::before {
 
 .input {
     flex: 1;
+    min-width: 0;
     background: var(--bg-input);
     border: 1px solid var(--border);
     border-radius: var(--radius);
@@ -400,7 +405,7 @@ input[type="number"] {
     margin-bottom: 28px;
 }
 
-.field-group { flex: 1; }
+.field-group { flex: 1; min-width: 0; }
 
 .field-row {
     display: flex;
@@ -422,6 +427,7 @@ input[type="number"] {
     position: relative;
     display: flex;
     align-items: center;
+    min-width: 0;
 }
 
 .input-with-unit .input {
