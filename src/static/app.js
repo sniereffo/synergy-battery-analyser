@@ -586,7 +586,8 @@ function renderDailyUsage() {
         xAxis: { type: 'category', data: dates, axisLabel: { fontSize: 10, rotate: 45 } },
         yAxis: { type: 'value', name: 'kWh', nameTextStyle: { fontSize: 11 } },
         series,
-        dataZoom: [{ type: 'slider', bottom: 8, height: 24, borderColor: cssVar('--border'), fillerColor: cssVar('--accent-green-bg') }],
+        dataZoom: [{ type: 'slider', bottom: 4, height: 20, borderColor: cssVar('--border'), fillerColor: cssVar('--accent-green-bg') }],
+        grid: { ...baseOption().grid, bottom: 100 },
         tooltip: { ...baseOption().tooltip, trigger: 'axis' },
     });
 }
@@ -696,7 +697,8 @@ function renderSolarVsConsumption() {
                 smooth: true,
             },
         ],
-        dataZoom: [{ type: 'slider', bottom: 8, height: 24, borderColor: cssVar('--border'), fillerColor: cssVar('--accent-green-bg') }],
+        dataZoom: [{ type: 'slider', bottom: 4, height: 20, borderColor: cssVar('--border'), fillerColor: cssVar('--accent-green-bg') }],
+        grid: { ...baseOption().grid, bottom: 100 },
         tooltip: { ...baseOption().tooltip, trigger: 'axis' },
     });
 }
@@ -726,7 +728,7 @@ function renderBatterySimulation() {
     controls.innerHTML = `
         <div class="day-selector">
             <button class="btn btn-outline" onclick="changeBatteryDay(-1)" ${batteryDayIndex === 0 ? 'disabled' : ''}>&larr;</button>
-            <span class="day-label">${dayKey}</span>
+            <input type="date" class="day-picker" value="${dayKey}" min="${allDays[0]}" max="${allDays[allDays.length - 1]}" onchange="jumpToBatteryDay(this.value)">
             <button class="btn btn-outline" onclick="changeBatteryDay(1)" ${batteryDayIndex >= allDays.length - 1 ? 'disabled' : ''}>&rarr;</button>
             <span style="color:var(--text-muted);font-size:0.78rem;margin-left:8px">${batteryDayIndex + 1} / ${allDays.length}</span>
         </div>
@@ -735,8 +737,11 @@ function renderBatterySimulation() {
     const times = dayData.map(iv => iv.timestamp.split('T')[1].slice(0, 5));
     const capacity = parseFloat(document.getElementById('batteryCapacity').value) || 15;
 
+    const opt = baseOption();
+    opt.grid.right = 80;
+    currentChart.clear();
     currentChart.setOption({
-        ...baseOption(),
+        ...opt,
         legend: { data: ['Battery Level', 'Consumption', 'Solar Export', 'Discharge'], textStyle: { color: cssVar('--text-secondary'), fontSize: 11 }, top: 4 },
         xAxis: { type: 'category', data: times, axisLabel: { fontSize: 10 } },
         yAxis: [
@@ -786,6 +791,18 @@ function renderBatterySimulation() {
 function changeBatteryDay(delta) {
     batteryDayIndex += delta;
     renderChart();
+}
+
+function jumpToBatteryDay(dateStr) {
+    const intervals = analysisResult.intervals;
+    const daySet = new Set();
+    intervals.forEach(iv => daySet.add(iv.timestamp.split('T')[0]));
+    const allDays = [...daySet].sort();
+    const idx = allDays.indexOf(dateStr);
+    if (idx >= 0) {
+        batteryDayIndex = idx;
+        renderChart();
+    }
 }
 
 // --- Chart 5: ROI ---
