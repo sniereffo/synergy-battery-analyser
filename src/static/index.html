@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Synergy Battery Feasibility Analyser</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Instrument+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 20 20' fill='none'><rect x='2' y='4' width='16' height='12' rx='2' stroke='%234ade94' stroke-width='1.5'/><rect x='18' y='8' width='2' height='4' rx='0.5' fill='%234ade94'/><rect x='5' y='7' width='4' height='6' rx='0.5' fill='%234ade94'/><rect x='10' y='9' width='4' height='4' rx='0.5' fill='%234ade94' opacity='0.5'/></svg>">
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+    <script>
+        // Apply theme before render to prevent flash
+        (function() {
+            var s = localStorage.getItem('theme');
+            if (s === 'dark' || (!s && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+                document.documentElement.classList.add('dark');
+            }
+        })();
+    </script>
+</head>
+<body>
+    <div class="app">
+        <header class="header">
+            <div class="header-mark">
+                <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+                    <rect x="2" y="4" width="16" height="12" rx="2" stroke="currentColor" stroke-width="1.5"/>
+                    <rect x="18" y="8" width="2" height="4" rx="0.5" fill="currentColor"/>
+                    <rect x="5" y="7" width="4" height="6" rx="0.5" fill="var(--accent-green)"/>
+                    <rect x="10" y="9" width="4" height="4" rx="0.5" fill="var(--accent-green)" opacity="0.5"/>
+                </svg>
+                <h1>Synergy - Battery Feasibility Analyser</h1>
+            </div>
+            <div class="header-right">
+                <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Toggle theme">
+                    <svg class="icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+                    <svg class="icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+                </button>
+                <div class="header-status" id="authStatus">
+                    <span class="status-dot offline"></span>
+                    <span class="status-text">Not connected</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Setup Section -->
+        <section class="setup-section" id="setupSection">
+            <div class="setup-grid">
+                <!-- Auth Card -->
+                <div class="card auth-card">
+                    <div class="card-header">
+                        <span class="card-number">01</span>
+                        <h2>Connect to Synergy</h2>
+                    </div>
+
+                    <div class="auth-step" id="stepAddress">
+                        <label class="field-label">Premise address</label>
+                        <div class="input-row">
+                            <input type="text" id="addressInput" placeholder="e.g. 12 Example St, Suburb" class="input">
+                            <button id="lookupBtn" class="btn btn-primary" onclick="searchPremise()">Look up</button>
+                        </div>
+                        <div class="field-hint">Must match the supply address on your Synergy bill</div>
+                        <div id="premiseResults" class="premise-results hidden"></div>
+                    </div>
+
+                    <div class="auth-step disabled" id="stepMethod">
+                        <label class="field-label">Verification method</label>
+                        <div class="method-toggle">
+                            <button class="method-btn active" id="methodEmail" onclick="setLoginMethod('email')">Email</button>
+                            <button class="method-btn" id="methodSms" onclick="setLoginMethod('sms')">SMS</button>
+                        </div>
+                        <div id="emailField" class="input-row">
+                            <input type="email" id="emailInput" placeholder="your@email.com" class="input" disabled>
+                            <button id="otpBtn" class="btn btn-primary" onclick="requestToken()" disabled>Send OTP</button>
+                        </div>
+                        <div id="smsField" class="input-row hidden">
+                            <input type="tel" id="mobileInput" placeholder="04xx xxx xxx" class="input" disabled>
+                            <button id="smsBtn" class="btn btn-primary" onclick="requestSmsCode()" disabled>Send SMS</button>
+                        </div>
+                    </div>
+
+                    <div class="auth-step disabled" id="stepOtp">
+                        <label class="field-label">Verification code</label>
+                        <div class="input-row">
+                            <input type="text" id="otpInput" placeholder="6-digit code" class="input" maxlength="6" disabled>
+                            <button id="loginBtn" class="btn btn-primary" onclick="loginWithToken()" disabled>Login</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Config Card -->
+                <div class="card config-card">
+                    <div class="card-header">
+                        <span class="card-number">02</span>
+                        <h2>Analysis Parameters</h2>
+                    </div>
+
+                    <div class="config-fields">
+                        <div class="field-group">
+                            <label class="field-label">Data source</label>
+                            <select id="dataSource" class="input" onchange="onDataSourceChange()">
+                                <option value="">Fetch live from Synergy</option>
+                            </select>
+                        </div>
+
+                        <div class="field-group plan-selector">
+                            <label class="field-label">Tariff plan</label>
+                            <select id="planSelector" class="input">
+                                <option value="auto">Auto-detect from Synergy</option>
+                            </select>
+                            <div id="tariffFields" class="tariff-fields hidden"></div>
+                        </div>
+
+                        <div class="field-group">
+                            <label class="field-label">Date range</label>
+                            <div class="date-row">
+                                <input type="date" id="startDate" class="input">
+                                <span class="date-sep">&rarr;</span>
+                                <input type="date" id="endDate" class="input">
+                            </div>
+                        </div>
+
+                        <div class="field-row">
+                            <div class="field-group">
+                                <label class="field-label">Battery capacity</label>
+                                <div class="input-with-unit">
+                                    <input type="number" id="batteryCapacity" value="15" min="0" step="0.5" class="input">
+                                    <span class="unit">kWh</span>
+                                </div>
+                            </div>
+                            <div class="field-group">
+                                <label class="field-label">Battery cost <span class="optional">(optional)</span></label>
+                                <div class="input-with-unit">
+                                    <input type="number" id="batteryCost" placeholder="—" min="0" step="100" class="input">
+                                    <span class="unit">AUD</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="field-row">
+                            <div class="field-group">
+                                <label class="field-label">Feed-in peak <span class="optional">(3pm–9pm)</span></label>
+                                <div class="input-with-unit">
+                                    <input type="number" id="feedInPeak" value="10" min="0" step="0.1" class="input">
+                                    <span class="unit">c/kWh</span>
+                                </div>
+                            </div>
+                            <div class="field-group">
+                                <label class="field-label">Feed-in off-peak</label>
+                                <div class="input-with-unit">
+                                    <input type="number" id="feedInOffPeak" value="2" min="0" step="0.1" class="input">
+                                    <span class="unit">c/kWh</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="field-group">
+                            <label class="toggle-label">
+                                <input type="checkbox" id="gridTopup">
+                                <span class="toggle-switch"></span>
+                                <span>Grid top-up during cheapest tariff</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <button id="analyseBtn" class="btn btn-accent btn-large" onclick="runAnalysis()" disabled>
+                        <span class="btn-text">Fetch &amp; Analyse</span>
+                        <span class="btn-spinner hidden"></span>
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <!-- Results Section -->
+        <section class="results-section hidden" id="resultsSection">
+            <!-- Plan Info -->
+            <div class="plan-banner" id="planBanner"></div>
+
+            <!-- Summary Cards -->
+            <div class="summary-grid" id="summaryGrid"></div>
+
+            <!-- Chart Tabs -->
+            <div class="card chart-card">
+                <div class="chart-tabs" id="chartTabs">
+                    <button class="tab active" data-tab="daily">Daily Usage</button>
+                    <button class="tab" data-tab="cost">Cost Breakdown</button>
+                    <button class="tab" data-tab="solar">Import vs Export</button>
+                    <button class="tab" data-tab="battery">Battery Simulation</button>
+                    <button class="tab" data-tab="roi">ROI</button>
+                    <button class="tab" data-tab="heatmap">Heatmap</button>
+                </div>
+
+                <div class="chart-controls" id="chartControls"></div>
+                <div class="chart-container" id="chartContainer"></div>
+            </div>
+
+            <!-- Export -->
+            <div class="export-bar">
+                <button class="btn btn-outline" onclick="exportCsv()">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <path d="M2 10v3a1 1 0 001 1h10a1 1 0 001-1v-3M8 2v9M5 8l3 3 3-3"/>
+                    </svg>
+                    Export CSV
+                </button>
+                <button class="btn btn-outline" onclick="showSetup()">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <path d="M2 4l5 4-5 4M9 12h5"/>
+                    </svg>
+                    New Analysis
+                </button>
+            </div>
+        </section>
+
+        <!-- Toast -->
+        <div class="toast hidden" id="toast"></div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
