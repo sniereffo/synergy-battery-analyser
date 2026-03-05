@@ -60,6 +60,7 @@ class AnalyseRequest(BaseModel):
     end_date: date
     battery_capacity_kwh: float
     battery_cost_dollars: float | None = None
+    inverter_capacity_kw: float = 5.0
     grid_topup: bool = False
     feed_in_peak_cents: float = 10.0    # DEBS peak rate (3pm-9pm)
     feed_in_off_peak_cents: float = 2.0  # DEBS off-peak rate
@@ -223,7 +224,7 @@ async def analyse(req: AnalyseRequest):
         )
 
         # Battery simulation
-        battery_result = simulate_battery(categorised, req.battery_capacity_kwh, req.grid_topup)
+        battery_result = simulate_battery(categorised, req.battery_capacity_kwh, req.grid_topup, req.inverter_capacity_kw)
 
         # Calculate summaries
         num_days = (req.end_date - req.start_date).days + 1
