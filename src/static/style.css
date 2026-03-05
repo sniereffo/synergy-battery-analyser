@@ -2,6 +2,7 @@
 
 /* --- Light theme (default) --- */
 :root {
+    color-scheme: light;
     --bg-primary: #f4f6f9;
     --bg-card: #ffffff;
     --bg-card-hover: #f0f2f5;
@@ -42,6 +43,7 @@
 
 /* --- Dark theme --- */
 :root.dark {
+    color-scheme: dark;
     --bg-primary: #0a0e13;
     --bg-card: #111820;
     --bg-card-hover: #161e28;
@@ -712,7 +714,7 @@ input[type="number"] {
 
 .chart-card {
     padding: 0;
-    overflow: hidden;
+    overflow: visible;
 }
 
 .chart-tabs {
@@ -763,7 +765,7 @@ input[type="number"] {
 .chart-container {
     width: 100%;
     height: 480px;
-    padding: 16px 12px;
+    padding: 16px 16px 16px 12px;
 }
 
 /* Day selector for battery chart */
@@ -778,12 +780,20 @@ input[type="number"] {
     font-size: 0.8rem;
 }
 
-.day-selector .day-label {
+.day-selector .day-picker {
     font-family: var(--font-mono);
     font-size: 0.85rem;
     color: var(--text-secondary);
-    min-width: 100px;
-    text-align: center;
+    color-scheme: light;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 4px 8px;
+    cursor: pointer;
+}
+
+:root.dark .day-selector .day-picker {
+    color-scheme: dark;
 }
 
 /* === Export Bar === */
