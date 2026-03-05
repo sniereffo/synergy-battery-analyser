@@ -2,6 +2,7 @@ def simulate_battery(
     usage_data: list[dict],
     capacity_kwh: float,
     grid_topup: bool = False,
+    inverter_capacity_kw: float = 5.0,
 ) -> list[dict]:
     """Simulate battery charge/discharge across half-hourly usage data.
 
@@ -9,9 +10,11 @@ def simulate_battery(
     Charging from export forfeits the feed-in credit for that energy.
     Optionally tops up from grid during the cheapest tariff period.
     Discharges when consumption exceeds export (net grid draw).
+    Charge and discharge rates are capped by the inverter capacity.
     """
     battery_level = 0.0
     result = []
+    max_per_interval = inverter_capacity_kw * 0.5  # kWh per 30-min interval
 
     # Find cheapest tariff rate for grid top-up
     all_rates = {e["rate_cents"] for e in usage_data}
@@ -31,18 +34,19 @@ def simulate_battery(
 
         if net > 0:
             # Surplus export — charge the battery (forfeits feed-in credit)
-            charge_kwh = min(net, capacity_kwh - battery_level)
+            charge_kwh = min(net, capacity_kwh - battery_level, max_per_interval)
             battery_level += charge_kwh
         elif net < 0:
             # Deficit — discharge battery to cover it
             needed = abs(net)
-            discharge_kwh = min(needed, battery_level)
+            discharge_kwh = min(needed, battery_level, max_per_interval)
             battery_level -= discharge_kwh
             savings_cents = discharge_kwh * rate
 
         # Grid top-up: charge from grid during cheapest tariff if battery isn't full
         if grid_topup and rate == cheapest_rate and battery_level < capacity_kwh:
-            topup = capacity_kwh - battery_level
+            remaining_charge = max_per_interval - charge_kwh  # respect rate limit
+            topup = min(capacity_kwh - battery_level, remaining_charge)
             grid_topup_kwh = topup
             battery_level += topup
 

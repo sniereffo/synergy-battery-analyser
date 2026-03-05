@@ -395,6 +395,7 @@ async function runAnalysis() {
         start_date: document.getElementById('startDate').value,
         end_date: document.getElementById('endDate').value,
         battery_capacity_kwh: parseFloat(document.getElementById('batteryCapacity').value) || 15,
+        inverter_capacity_kw: parseFloat(document.getElementById('inverterCapacity').value) || 5,
         battery_cost_dollars: parseFloat(document.getElementById('batteryCost').value) || null,
         grid_topup: document.getElementById('gridTopup').checked,
         feed_in_peak_cents: parseFloat(document.getElementById('feedInPeak').value) || 0,
