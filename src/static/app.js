@@ -81,13 +81,20 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('planSelector').addEventListener('change', (e) => {
         const planName = e.target.value;
         const tariffFields = document.getElementById('tariffFields');
+        const topupGroup = document.getElementById('gridTopupGroup');
+        const topupCheckbox = document.getElementById('gridTopup');
         if (planName === 'auto' || !rateSchedules || !rateSchedules[planName]) {
             tariffFields.classList.add('hidden');
             tariffFields.innerHTML = '';
+            topupGroup.classList.remove('hidden');
             return;
         }
         renderTariffFields(planName);
         tariffFields.classList.remove('hidden');
+
+        const isFlatRate = Object.keys(PLAN_TIME_WINDOWS[planName] || {}).length <= 1;
+        topupGroup.classList.toggle('hidden', isFlatRate);
+        if (isFlatRate) topupCheckbox.checked = false;
     });
 
     // Tab switching
@@ -165,6 +172,12 @@ async function fetchDataFiles() {
         const selector = document.getElementById('dataSource');
         // Clear existing file options (keep first "Fetch live" option)
         while (selector.options.length > 1) selector.remove(1);
+        if (files.length) {
+            const divider = document.createElement('option');
+            divider.disabled = true;
+            divider.textContent = '— Saved —';
+            selector.appendChild(divider);
+        }
         files.forEach(name => {
             const opt = document.createElement('option');
             opt.value = name;

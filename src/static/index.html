@@ -100,14 +100,14 @@
                         <div class="field-group">
                             <label class="field-label">Data source</label>
                             <select id="dataSource" class="input" onchange="onDataSourceChange()">
-                                <option value="">Fetch live from Synergy</option>
+                                <option value="">Synergy</option>
                             </select>
                         </div>
 
                         <div class="field-group plan-selector">
                             <label class="field-label">Tariff plan</label>
                             <select id="planSelector" class="input">
-                                <option value="auto">Auto-detect from Synergy</option>
+                                <option value="auto">Auto-detect</option>
                             </select>
                             <div id="tariffFields" class="tariff-fields hidden"></div>
                         </div>
@@ -155,7 +155,7 @@
                             </div>
                         </div>
 
-                        <div class="field-group">
+                        <div class="field-group" id="gridTopupGroup">
                             <label class="toggle-label">
                                 <input type="checkbox" id="gridTopup">
                                 <span class="toggle-switch"></span>
