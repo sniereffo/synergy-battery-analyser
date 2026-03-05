@@ -2,16 +2,20 @@
 
 Analyse your [Synergy](https://www.synergy.net.au/) (Western Australia) electricity usage data to determine whether a home battery is financially worthwhile.
 
+<p align="center">
+  <img src="example.png" alt="Screenshot">
+</p>
+
 ## Features
 
-- **Synergy API integration** - Fetches 30-minute interval data directly from Synergy's self-serve portal (email or SMS OTP authentication)
-- **Tariff-aware analysis** - Auto-detects your energy plan (EV Add On, Midday Saver, Home Plan A1, or custom) with editable rates
-- **Battery simulation** - Models charge/discharge cycles, including grid top-up during cheapest tariffs
-- **Feed-in credit accounting** - Calculates DEBS feed-in credits (peak/off-peak) and tracks lost credits when battery captures export
-- **Interactive charts** - Six ECharts visualisations: daily usage, cost breakdown, import vs export, battery simulation, ROI, and heatmap
-- **Data caching** - Saves API responses locally for offline re-analysis without re-authenticating
-- **Light/dark theme** - Toggleable, honours system preference
-- **CSV export** - Download interval data for further analysis
+- **Synergy API integration** — Fetches 12 months of half-hourly interval data directly from Synergy's self-serve portal via email or SMS OTP authentication
+- **Tariff-aware analysis** — Auto-detects your energy plan (EV Add On, Midday Saver, Home Plan A1) or allows fully custom tariff rates and supply charges
+- **Battery simulation** — Models half-hourly charge/discharge cycles, charges from solar export, discharges to offset grid import, with optional grid top-up during the cheapest tariff period
+- **Feed-in credit accounting** — Calculates DEBS feed-in credits (configurable peak/off-peak rates) and tracks lost credits when the battery captures energy that would otherwise be exported
+- **Offline analysis** — Saves raw API responses locally so you can re-run analysis with different parameters without re-authenticating or hitting the Synergy API
+- **Light/dark theme** — Toggleable via header button, honours system preference with flash-free page load
+- **CSV export** — Download the full interval dataset for use in spreadsheets or other tools
+- **Cross-platform** — Standalone binaries for Linux, macOS, and Windows with no dependencies required
 
 ## Quick start
 
@@ -19,6 +23,23 @@ Analyse your [Synergy](https://www.synergy.net.au/) (Western Australia) electric
 2. Run the binary — your default browser will open automatically to the app
 
 No installation or dependencies required.
+
+## How it works
+
+1. Enter your premise address (must match your Synergy bill) and verify via email or SMS OTP
+2. Select your energy plan or let it auto-detect, and configure battery capacity, date range, and feed-in rates
+3. The tool fetches your half-hourly consumption and export data from Synergy (and saves it locally for future use)
+4. Each interval is categorised by tariff period and a battery charge/discharge simulation is run
+5. Results are presented as summary cards and six interactive charts
+
+## Charts
+
+- **Daily Usage** — Stacked area chart of daily consumption broken down by tariff period (peak, off-peak, super off-peak, overnight) with solar export overlay. Includes a zoom slider for navigating the full date range.
+- **Cost Breakdown** — Daily cost in dollars split by tariff period, showing the financial impact of each rate tier over time.
+- **Import vs Export** — Grid import and grid export as overlaid line charts across the full analysis period, useful for spotting seasonal generation and consumption patterns.
+- **Battery Simulation** — Per-day view with a date picker to jump to any day. Shows battery state of charge (left axis) alongside half-hourly consumption, solar export, and battery discharge bars (right axis).
+- **ROI** — Cumulative savings curve over the analysis period. If a battery cost is provided, shows the breakeven point and estimated payback period.
+- **Heatmap** — Hour-of-day vs date grid showing consumption intensity. Highlights usage patterns across time of day and season.
 
 ## Development
 
@@ -32,22 +53,14 @@ uv run uvicorn synergy_analyser.main:app --host 127.0.0.1 --port 8000
 uv run pytest -v
 
 # Build standalone binary
-uv run --group dev pyinstaller synergy-analyser.spec
+uv run --group dev pyinstaller synergy-battery-analyser.spec
 ```
-
-## How it works
-
-1. Enter your premise address and verify via email or SMS OTP
-2. Configure battery capacity, date range, and feed-in rates
-3. The tool fetches your half-hourly consumption and export data from Synergy
-4. It categorises each interval by tariff period and simulates battery behaviour
-5. Results show net savings, cost comparison, and estimated payback period
 
 ## Data notes
 
-- `kwHalfHourlyValues` from the Synergy API is in **kW** (power) - the tool converts to kWh by multiplying by 0.5
-- `kwhHalfHourlyValuesGeneration` is grid **export**, not total solar generation - already in kWh
-- Feed-in rates default to DEBS: 10 c/kWh peak (3pm-9pm), 2 c/kWh off-peak
+- `kwHalfHourlyValues` from the Synergy API is in **kW** (power) — the tool converts to kWh by multiplying by 0.5
+- `kwhHalfHourlyValuesGeneration` is grid **export**, not total solar generation — already in kWh
+- Feed-in rates default to DEBS: 10 c/kWh peak (3pm–9pm), 2 c/kWh off-peak
 
 ## License
 
