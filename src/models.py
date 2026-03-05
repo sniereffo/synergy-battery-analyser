@@ -48,7 +48,9 @@ RATE_SCHEDULES: dict[str, dict] = {
 # Map API period names to our normalised rate names
 _PERIOD_NAME_MAP = {
     "OFF PEAK(AM)": "Off Peak",
+    "OFF PEAK": "Off Peak",
     "SUPER OFF PEAK": "Super Off Peak",
+    "SUPER OFFPEAK": "Super Off Peak",
     "PEAK": "Peak",
     "OFF-PEAK": "Off Peak",
     "OVERNIGHT": "Overnight",
@@ -78,6 +80,8 @@ def build_plan_from_api(api_details: dict) -> EnergyPlan:
     # Parse numbered periods (period2 through period5+)
     for key in sorted(api_details.keys()):
         if key.startswith("period") and key.endswith("Hours"):
+            if not api_details[key]:  # skip empty periods
+                continue
             period_num = key.replace("Hours", "")  # e.g. "period2"
             api_name = api_details[period_num]  # e.g. "SUPER OFF PEAK"
             normalised = _PERIOD_NAME_MAP.get(api_name, api_name)
