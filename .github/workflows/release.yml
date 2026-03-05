@@ -36,20 +36,20 @@ jobs:
         with:
           python-version: "3.14"
       - run: uv sync --group dev
-      - run: uv run pyinstaller synergy-analyser.spec
+      - run: uv run pyinstaller synergy-battery-analyser.spec
 
       - name: Rename artifact (Linux/macOS)
         if: runner.os != 'Windows'
-        run: mv dist/synergy-analyser dist/synergy-analyser-${{ matrix.suffix }}
+        run: mv dist/synergy-battery-analyser dist/synergy-battery-analyser-${{ matrix.suffix }}
 
       - name: Rename artifact (Windows)
         if: runner.os == 'Windows'
-        run: mv dist/synergy-analyser.exe dist/synergy-analyser-${{ matrix.suffix }}.exe
+        run: mv dist/synergy-battery-analyser.exe dist/synergy-battery-analyser-${{ matrix.suffix }}.exe
 
       - uses: actions/upload-artifact@v4
         with:
-          name: synergy-analyser-${{ matrix.suffix }}
-          path: dist/synergy-analyser-${{ matrix.suffix }}*
+          name: synergy-battery-analyser-${{ matrix.suffix }}
+          path: dist/synergy-battery-analyser-${{ matrix.suffix }}*
 
   release:
     needs: build
@@ -66,6 +66,6 @@ jobs:
         with:
           generate_release_notes: true
           files: |
-            synergy-analyser-linux
-            synergy-analyser-macos
-            synergy-analyser-windows.exe
+            synergy-battery-analyser-linux
+            synergy-battery-analyser-macos
+            synergy-battery-analyser-windows.exe
