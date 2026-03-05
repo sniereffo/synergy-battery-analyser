@@ -1,0 +1,22 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Test/build artifacts
+.pytest_cache/
+*.spec
+
+# Claude Code
+CLAUDE.md
+
+# Sensitive/personal data
+api_response.json
+data/
+discover_api.py
