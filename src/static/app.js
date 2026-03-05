@@ -442,7 +442,8 @@ async function runAnalysis() {
         }
 
         analysisResult = await res.json();
-        batteryDayIndex = 0;
+        const daySet = new Set(analysisResult.intervals.map(iv => iv.timestamp.split('T')[0]));
+        batteryDayIndex = daySet.size - 1;
         showResults();
         toast(cachedFile ? 'Loaded from cache' : 'Analysis complete — data cached', 'success');
         if (!cachedFile) fetchDataFiles();
