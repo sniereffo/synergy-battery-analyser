@@ -5,6 +5,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, model_validator
 from pathlib import Path
+import asyncio
 import json
 import sys
 
@@ -15,12 +16,26 @@ from .rates import fetch_plan_rates
 from .battery import simulate_battery
 
 
+def _idle_job() -> dict:
+    return {
+        "status": "idle",   # idle | running | done | error
+        "phase": "",        # human-readable current step
+        "total": 0,
+        "done": 0,
+        "current_day": None,
+        "result": None,
+        "error": None,
+    }
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # The browser is only launched when the user asks to log in, so importing
     # the app (e.g. under tests) never spawns Chromium.
     app.state.synergy = None
     app.state.services = []
+    app.state.login_finalized = False
+    app.state.job = _idle_job()
     yield
     if app.state.synergy is not None:
         await app.state.synergy.close()
@@ -113,12 +128,19 @@ async def open_login():
 
 @app.get("/api/auth/status")
 async def auth_status():
-    """Report whether the user is logged in and, if so, their services."""
+    """Report whether the user is logged in and, if so, their services.
+
+    On the first status check after login we fetch the service list and close
+    the visible browser window — the session persists in the browser context.
+    """
     client: SynergyBrowserClient | None = app.state.synergy
     if client is None or not client.logged_in:
         return {"logged_in": False, "services": []}
     if not app.state.services:
         app.state.services = await client.get_services()
+    if not app.state.login_finalized:
+        await client.finalize_login()
+        app.state.login_finalized = True
     return {"logged_in": True, "services": app.state.services}
 
 
@@ -142,18 +164,63 @@ def _load_cached(name: str) -> tuple[list[dict], str | None]:
 
 @app.post("/api/analyse")
 async def analyse(req: AnalyseRequest):
+    """Start an analysis job. Fetching a live range can take a while, so this
+    runs in the background; poll /api/analyse/progress for status + result."""
+    if app.state.job["status"] == "running":
+        raise HTTPException(409, "An analysis is already running.")
+    app.state.job = _idle_job()
+    app.state.job["status"] = "running"
+    app.state.job["phase"] = "Starting…"
+    asyncio.create_task(_run_analysis(req))
+    return {"status": "started"}
+
+
+@app.get("/api/analyse/progress")
+async def analyse_progress():
+    return app.state.job
+
+
+async def _run_analysis(req: AnalyseRequest):
+    job = app.state.job
+    try:
+        result = await _do_analysis(req, job)
+        job["result"] = result
+        job["phase"] = "Done"
+        job["status"] = "done"
+    except HTTPException as e:
+        job["error"] = e.detail
+        job["status"] = "error"
+    except Exception as e:  # noqa: BLE001 — surface any failure to the UI
+        job["error"] = str(e)
+        job["status"] = "error"
+
+
+async def _do_analysis(req: AnalyseRequest, job: dict) -> dict:
     # 1. Obtain raw intervals (timestamp, consumption_kwh, export_kwh, tariff_name)
     if req.cached_file:
+        job["phase"] = "Loading cached data…"
         intervals, cached_tariff = _load_cached(req.cached_file)
         tariff_label = req.tariff_label or cached_tariff
+        job["total"] = job["done"] = (req.end_date - req.start_date).days + 1
     else:
         client: SynergyBrowserClient | None = app.state.synergy
         if client is None or not client.logged_in:
             raise HTTPException(401, "Not logged in. Open the Synergy login first.")
         if not req.service_id:
             raise HTTPException(400, "service_id is required for a live fetch.")
+
+        job["phase"] = "Fetching usage from Synergy…"
+        job["total"] = (req.end_date - req.start_date).days + 1
+
+        def progress(done, total, day):
+            job["done"] = done
+            job["total"] = total
+            job["current_day"] = day.isoformat()
+
         try:
-            intervals = await client.get_range(req.service_id, req.start_date, req.end_date)
+            intervals = await client.get_range(
+                req.service_id, req.start_date, req.end_date, progress=progress
+            )
         except NotLoggedIn:
             raise HTTPException(401, "Not logged in. Open the Synergy login first.")
 
@@ -172,6 +239,7 @@ async def analyse(req: AnalyseRequest):
         raise HTTPException(400, "No interval data returned for that date range.")
 
     # 2. Build a data-driven plan for the periods actually present
+    job["phase"] = "Pricing and simulating…"
     periods_present = sorted({i["tariff_name"] for i in intervals})
     plan = plan_for_tariff(
         tariff_label, periods_present,

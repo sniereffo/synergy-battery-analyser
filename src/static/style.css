@@ -858,3 +858,75 @@ input[type="number"] {
 .results-section {
     animation: fadeUp 0.4s ease-out;
 }
+
+/* === Progress Modal === */
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 200;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.55);
+    backdrop-filter: blur(3px);
+    padding: 20px;
+}
+.modal-overlay.hidden { display: none; }
+.modal-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 32px 36px;
+    width: 100%;
+    max-width: 440px;
+    text-align: center;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+}
+.modal-spinner {
+    width: 34px;
+    height: 34px;
+    margin: 0 auto 18px;
+    border: 3px solid var(--border);
+    border-top-color: var(--accent-green);
+    border-radius: 50%;
+    animation: spin 0.9s linear infinite;
+}
+.modal-card h3 {
+    margin: 0 0 18px;
+    font-size: 1.05rem;
+    color: var(--text-primary);
+    font-weight: 600;
+}
+.progress-track {
+    height: 8px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+}
+.progress-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--accent-green);
+    border-radius: 6px;
+    transition: width 0.4s ease;
+}
+.progress-count {
+    margin-top: 12px;
+    font-family: 'DM Mono', monospace;
+    font-size: 0.9rem;
+    color: var(--text-primary);
+}
+.progress-day {
+    margin-top: 4px;
+    font-family: 'DM Mono', monospace;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    min-height: 1em;
+}
+.modal-hint {
+    margin: 18px 0 0;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    line-height: 1.5;
+}

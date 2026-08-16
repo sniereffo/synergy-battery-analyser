@@ -97,6 +97,17 @@ class SynergyBrowserClient:
             waited += poll
         raise TimeoutError("Timed out waiting for Synergy login")
 
+    async def finalize_login(self):
+        """Close the visible browser window once logged in.
+
+        The authenticated session lives in the browser *context* (cookies) and
+        the harvested aura token, not the page — so we can close the window and
+        still issue data calls via `context.request`.
+        """
+        if self._page is not None and not self._page.is_closed():
+            await self._page.close()
+            self._page = None
+
     def _next_id(self) -> int:
         self._request_id += 1
         return self._request_id
@@ -164,19 +175,36 @@ class SynergyBrowserClient:
         return parse_halfhourly_response(result)
 
     async def get_range(
-        self, service_id: str, start: date, end: date, progress=None
+        self, service_id: str, start: date, end: date, progress=None, concurrency: int = 5
     ) -> list[dict]:
         """Fetch a contiguous date range, one day per call.
 
-        Calls are made sequentially to stay polite to the portal. `progress`, if
-        given, is called with (index, total, day) after each day.
+        The portal only serves one day of half-hourly data per request, so a
+        range means many calls. They run with bounded concurrency to cut the
+        wall-clock time while staying polite. `progress`, if given, is called
+        with (done, total, day) as each day completes. Results are returned in
+        chronological order regardless of completion order.
         """
         days = [start + timedelta(days=n) for n in range((end - start).days + 1)]
-        intervals: list[dict] = []
-        for i, day in enumerate(days, 1):
-            intervals.extend(await self.get_day(service_id, day))
+        total = len(days)
+        sem = asyncio.Semaphore(max(1, concurrency))
+        by_index: dict[int, list[dict]] = {}
+        done = 0
+
+        async def fetch(idx: int, day: date):
+            nonlocal done
+            async with sem:
+                result = await self.get_day(service_id, day)
+            by_index[idx] = result
+            done += 1
             if progress:
-                progress(i, len(days), day)
+                progress(done, total, day)
+
+        await asyncio.gather(*(fetch(i, d) for i, d in enumerate(days)))
+
+        intervals: list[dict] = []
+        for i in range(total):
+            intervals.extend(by_index.get(i, []))
         return intervals
 
     async def close(self):

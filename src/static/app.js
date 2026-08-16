@@ -337,9 +337,7 @@ async function runAnalysis() {
         cached_file: cachedFile,
     };
 
-    if (!cachedFile) {
-        btnText.textContent = 'Fetching (one day at a time)…';
-    }
+    showProgressModal();
 
     try {
         const res = await fetch('/api/analyse', {
@@ -347,25 +345,68 @@ async function runAnalysis() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload),
         });
-
         if (!res.ok) {
-            const err = await res.json().catch(() => ({ detail: 'Unknown error' }));
-            throw new Error(err.detail || 'Analysis failed');
+            const err = await res.json().catch(() => ({ detail: 'Could not start analysis' }));
+            throw new Error(err.detail || 'Could not start analysis');
         }
 
-        analysisResult = await res.json();
+        const job = await pollAnalysis();
+        if (job.status === 'error') throw new Error(job.error || 'Analysis failed');
+
+        analysisResult = job.result;
         const daySet = new Set(analysisResult.intervals.map(iv => iv.timestamp.split('T')[0]));
         batteryDayIndex = daySet.size - 1;
+        hideProgressModal();
         showResults();
         toast(cachedFile ? 'Loaded from cache' : 'Analysis complete — data cached', 'success');
         if (!cachedFile) fetchDataFiles();
     } catch (e) {
+        hideProgressModal();
         toast('Analysis failed: ' + e.message, 'error');
     } finally {
         btn.disabled = !canAnalyse();
         btnText.textContent = 'Fetch & Analyse';
         spinner.classList.add('hidden');
     }
+}
+
+// === Progress modal ===
+
+function pollAnalysis() {
+    return new Promise((resolve) => {
+        const iv = setInterval(async () => {
+            try {
+                const res = await fetch('/api/analyse/progress');
+                const job = await res.json();
+                updateProgressModal(job);
+                if (job.status === 'done' || job.status === 'error') {
+                    clearInterval(iv);
+                    resolve(job);
+                }
+            } catch (e) {
+                // transient — keep polling
+            }
+        }, 700);
+    });
+}
+
+function showProgressModal() {
+    document.getElementById('progressModal').classList.remove('hidden');
+    updateProgressModal({ phase: 'Starting…', done: 0, total: 0 });
+}
+
+function hideProgressModal() {
+    document.getElementById('progressModal').classList.add('hidden');
+}
+
+function updateProgressModal(job) {
+    document.getElementById('progressPhase').textContent = job.phase || 'Working…';
+    const total = job.total || 0;
+    const done = job.done || 0;
+    const pct = total ? Math.round((done / total) * 100) : 0;
+    document.getElementById('progressBar').style.width = pct + '%';
+    document.getElementById('progressCount').textContent = total ? `${done} / ${total} days retrieved` : '';
+    document.getElementById('progressDay').textContent = job.current_day ? `Latest day: ${job.current_day}` : '';
 }
 
 function showResults() {

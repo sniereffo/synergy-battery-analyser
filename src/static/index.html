@@ -196,6 +196,18 @@
 
         <!-- Toast -->
         <div class="toast hidden" id="toast"></div>
+
+        <!-- Progress modal -->
+        <div class="modal-overlay hidden" id="progressModal">
+            <div class="modal-card">
+                <div class="modal-spinner"></div>
+                <h3 id="progressPhase">Starting…</h3>
+                <div class="progress-track"><div class="progress-fill" id="progressBar"></div></div>
+                <div class="progress-count" id="progressCount"></div>
+                <div class="progress-day" id="progressDay"></div>
+                <p class="modal-hint">Synergy serves one day of half-hourly data per request, so a longer range takes a little while. You can leave this running.</p>
+            </div>
+        </div>
     </div>
 
     <script src="/static/app.js"></script>
