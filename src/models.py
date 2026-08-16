@@ -1,135 +1,101 @@
 from pydantic import BaseModel
-from datetime import time
 
 
-class TariffPeriod(BaseModel):
-    name: str
-    rate_cents: float
-    start_time: time
-    end_time: time  # if end < start, period spans midnight
+# The new Synergy portal labels each half-hourly slot with its tariff period
+# (one of these API column names). We no longer categorise by time-of-day; we
+# only need a c/kWh rate for each period the data actually contains.
+PERIOD_DISPLAY_NAMES = {
+    "PEAK": "Peak",
+    "OFF_PEAK": "Off Peak",
+    "OFF_PEAK(AM)": "Off Peak (AM)",
+    "OVERNIGHT": "Overnight",
+    "SUPER_OFFPEAK": "Super Off Peak",
+}
 
 
 class EnergyPlan(BaseModel):
     id: str
     name: str
-    supply_charge_cents: float  # cents per day
-    tariff_periods: list[TariffPeriod]
+    supply_charge_cents: float           # cents per day
+    rates: dict[str, float]              # API period name -> c/kWh
 
 
-# Tariff rates per product code.
-# The API provides time windows but NOT prices — we define rates here.
-# Keys are normalised period names that map to API period names.
+# Prefill defaults keyed by the tariff label Synergy returns in getLinkedServices
+# ("Tarrif"). These are best-known starting values shown in the UI and are fully
+# editable; the rates module refines them from Synergy's published pricing when
+# available. Rates are keyed by the API period column names.
 RATE_SCHEDULES: dict[str, dict] = {
-    "Home Plan (A1)": {
+    "EV2 TARIFF": {
+        "supply_charge_cents": 129.2269,
+        "rates": {
+            "PEAK": 53.8446,
+            "OFF_PEAK": 23.6916,
+            "OFF_PEAK(AM)": 23.6916,
+            "OVERNIGHT": 19.3841,
+            "SUPER_OFFPEAK": 8.6151,
+        },
+    },
+    "MIDDAY SAVER": {
+        "supply_charge_cents": 129.2269,
+        "rates": {
+            "PEAK": 53.8446,
+            "OFF_PEAK": 23.6916,
+            "SUPER_OFFPEAK": 8.6151,
+        },
+    },
+    "HOME PLAN A1": {
         "supply_charge_cents": 116.0505,
         "rates": {
-            "Anytime": 32.3719,
-        },
-    },
-    "Midday Saver": {
-        "supply_charge_cents": 129.2269,
-        "rates": {
-            "Super Off Peak": 8.6151,
-            "Peak": 53.8446,
-            "Off Peak": 23.6916,
-        },
-    },
-    "EV Add on": {
-        "supply_charge_cents": 129.2269,
-        "rates": {
-            "Super Off Peak": 8.6151,
-            "Peak": 53.8446,
-            "Off Peak": 23.6916,
-            "Overnight": 19.3841,
+            # A single anytime rate; the portal reports it under whichever
+            # period column the account uses.
+            "PEAK": 32.3719,
+            "OFF_PEAK": 32.3719,
+            "OFF_PEAK(AM)": 32.3719,
+            "OVERNIGHT": 32.3719,
+            "SUPER_OFFPEAK": 32.3719,
         },
     },
 }
 
-# Map API period names to our normalised rate names
-_PERIOD_NAME_MAP = {
-    "OFF PEAK(AM)": "Off Peak",
-    "OFF PEAK": "Off Peak",
-    "SUPER OFF PEAK": "Super Off Peak",
-    "SUPER OFFPEAK": "Super Off Peak",
-    "PEAK": "Peak",
-    "OFF-PEAK": "Off Peak",
-    "OVERNIGHT": "Overnight",
-}
+DEFAULT_SUPPLY_CHARGE_CENTS = 116.0505
 
 
-def get_rate_schedule(product_code: str) -> dict[str, float]:
-    return RATE_SCHEDULES[product_code]["rates"]
+def display_name(api_period: str) -> str:
+    """Human-friendly label for an API tariff-period column name."""
+    return PERIOD_DISPLAY_NAMES.get(api_period, api_period.replace("_", " ").title())
 
 
-def _parse_hours(hours_str: str) -> tuple[time, time]:
-    """Parse '0900-1500' into (time(9,0), time(15,0))."""
-    start_str, end_str = hours_str.split("-")
-    start = time(int(start_str[:2]), int(start_str[2:]))
-    end = time(int(end_str[:2]), int(end_str[2:]))
-    return start, end
+def plan_for_tariff(
+    tariff_label: str | None,
+    periods_present: list[str],
+    supply_charge_cents: float | None = None,
+    rate_overrides: dict[str, float] | None = None,
+) -> EnergyPlan:
+    """Build a plan for the periods that actually appear in the data.
 
+    Rates come from (in priority order) explicit overrides, the prefill schedule
+    matching the tariff label, then 0.0 (surfaced in the UI for the user to fill).
+    """
+    label = (tariff_label or "").strip().upper()
+    schedule = RATE_SCHEDULES.get(label, {})
+    base_rates = schedule.get("rates", {})
+    overrides = rate_overrides or {}
 
-def build_plan_from_api(api_details: dict) -> EnergyPlan:
-    """Build an EnergyPlan from the API's retrieveIntervalDetails entry."""
-    product_code = api_details["productCode"]
-    schedule = RATE_SCHEDULES[product_code]
-    rates = schedule["rates"]
-
-    periods: list[TariffPeriod] = []
-
-    # Parse numbered periods (period2 through period5+)
-    for key in sorted(api_details.keys()):
-        if key.startswith("period") and key.endswith("Hours"):
-            if not api_details[key]:  # skip empty periods
-                continue
-            period_num = key.replace("Hours", "")  # e.g. "period2"
-            api_name = api_details[period_num]  # e.g. "SUPER OFF PEAK"
-            normalised = _PERIOD_NAME_MAP.get(api_name, api_name)
-            rate = rates.get(normalised, 0.0)
-            start, end = _parse_hours(api_details[key])
-            periods.append(TariffPeriod(
-                name=normalised, rate_cents=rate, start_time=start, end_time=end,
-            ))
-
-    # Handle basePeriod — it's the gap not covered by numbered periods.
-    # For EV Add On: basePeriod is "OFF PEAK(AM)" covering 0600-0900
-    base_name = api_details.get("basePeriod", "")
-    if base_name:
-        normalised_base = _PERIOD_NAME_MAP.get(base_name, base_name)
-        rate = rates.get(normalised_base, 0.0)
-        # Determine base period hours from the gaps in other periods
-        base_start, base_end = _infer_base_period_hours(periods)
-        periods.append(TariffPeriod(
-            name=normalised_base, rate_cents=rate, start_time=base_start, end_time=base_end,
-        ))
-
-    return EnergyPlan(
-        id=product_code,
-        name=product_code,
-        supply_charge_cents=schedule["supply_charge_cents"],
-        tariff_periods=periods,
-    )
-
-
-def _infer_base_period_hours(periods: list[TariffPeriod]) -> tuple[time, time]:
-    """Find the gap in 24 hours not covered by the given periods."""
-    covered = set()
-    for p in periods:
-        start_h = p.start_time.hour
-        end_h = p.end_time.hour
-        if end_h <= start_h:
-            hours = list(range(start_h, 24)) + list(range(0, end_h))
+    rates = {}
+    for period in periods_present:
+        if period in overrides:
+            rates[period] = overrides[period]
         else:
-            hours = list(range(start_h, end_h))
-        covered.update(hours)
+            rates[period] = base_rates.get(period, 0.0)
 
-    uncovered = sorted(set(range(24)) - covered)
-    if not uncovered:
-        return time(0, 0), time(0, 0)
-
-    # Find contiguous range
-    start_h = uncovered[0]
-    end_h = uncovered[-1] + 1
-    if end_h == 24:
-        end_h = 0
-    return time(start_h, 0), time(end_h, 0)
+    supply = (
+        supply_charge_cents
+        if supply_charge_cents is not None
+        else schedule.get("supply_charge_cents", DEFAULT_SUPPLY_CHARGE_CENTS)
+    )
+    return EnergyPlan(
+        id=label or "custom",
+        name=tariff_label or "Custom",
+        supply_charge_cents=supply,
+        rates=rates,
+    )

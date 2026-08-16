@@ -1,71 +1,55 @@
 from contextlib import asynccontextmanager
-from datetime import date, datetime, time
+from datetime import date, datetime
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, model_validator
 from pathlib import Path
-import httpx
 import json
 import sys
 
-from .synergy_client import SynergyClient
-from .models import RATE_SCHEDULES, EnergyPlan, TariffPeriod, build_plan_from_api
-from .tariff import categorise_usage_data
+from .browser_client import SynergyBrowserClient, NotLoggedIn
+from .chartdata import parse_halfhourly_response, apply_rates  # noqa: F401 (parse used via client)
+from .models import RATE_SCHEDULES, plan_for_tariff, display_name
 from .battery import simulate_battery
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    app.state.synergy_client = SynergyClient()
-    app.state.allow_contract = None
+    # The browser is only launched when the user asks to log in, so importing
+    # the app (e.g. under tests) never spawns Chromium.
+    app.state.synergy = None
+    app.state.services = []
     yield
-    await app.state.synergy_client.close()
+    if app.state.synergy is not None:
+        await app.state.synergy.close()
 
 
 app = FastAPI(title="Synergy Battery Feasibility Analyser", lifespan=lifespan)
 
-# Support both normal and PyInstaller-bundled paths
-if getattr(sys, 'frozen', False):
+if getattr(sys, "frozen", False):
     static_dir = Path(sys._MEIPASS) / "static"
 else:
     static_dir = Path(__file__).parent / "static"
 
+DATA_DIR = Path("data")
 
-# --- Request/Response models ---
 
-class PremiseSearchRequest(BaseModel):
-    address: str
-
-class EmailTokenRequest(BaseModel):
-    email: str
-    premise_id: str
-
-class SmsCodeRequest(BaseModel):
-    mobile: str
-    premise_id: str
-
-class LoginRequest(BaseModel):
-    token: str
-    method: str = "email"  # "email" or "sms"
-
-class TariffPeriodOverride(BaseModel):
-    name: str
-    rate_cents: float
-    start_time: str  # "HH:MM" format
-    end_time: str
+# --- Request models ---
 
 class AnalyseRequest(BaseModel):
+    service_id: str | None = None
+    tariff_label: str | None = None
     start_date: date
     end_date: date
     battery_capacity_kwh: float
     battery_cost_dollars: float | None = None
     inverter_capacity_kw: float = 5.0
     grid_topup: bool = False
-    feed_in_peak_cents: float = 10.0    # DEBS peak rate (3pm-9pm)
-    feed_in_off_peak_cents: float = 2.0  # DEBS off-peak rate
-    custom_supply_charge_cents: float | None = None
-    custom_tariff_periods: list[TariffPeriodOverride] | None = None
+    feed_in_peak_cents: float = 10.0
+    feed_in_off_peak_cents: float = 2.0
+    supply_charge_cents: float | None = None
+    rate_overrides: dict[str, float] | None = None
     cached_file: str | None = None
 
     @model_validator(mode="after")
@@ -75,221 +59,168 @@ class AnalyseRequest(BaseModel):
         return self
 
 
-DATA_DIR = Path("data")
-
-
-# --- API routes ---
+# --- Basic routes ---
 
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
 
 
+@app.get("/api/rate-schedules")
+def list_rate_schedules():
+    return RATE_SCHEDULES
+
+
 @app.get("/api/data/files")
 def list_data_files():
-    """List cached API response files."""
     if not DATA_DIR.exists():
         return []
     return sorted(f.name for f in DATA_DIR.glob("*.json"))
 
 
-@app.get("/api/rate-schedules")
-def list_rate_schedules():
-    """Return available rate schedules for display in the UI."""
-    return RATE_SCHEDULES
+# --- Auth (browser-assisted) ---
+
+@app.post("/api/auth/open-login")
+async def open_login():
+    """Launch the browser window for the user to log in to Synergy."""
+    if app.state.synergy is None:
+        app.state.synergy = SynergyBrowserClient(headless=False)
+        await app.state.synergy.start()
+    return {"status": "browser_opened"}
 
 
-@app.post("/api/premise/search")
-async def search_premise(req: PremiseSearchRequest):
-    try:
-        client: SynergyClient = app.state.synergy_client
-        results = await client.search_premise(req.address)
-        return results
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(e.response.status_code, f"Synergy API error: {e.response.text}")
-    except httpx.RequestError as e:
-        raise HTTPException(502, f"Could not reach Synergy API: {e}")
+@app.get("/api/auth/status")
+async def auth_status():
+    """Report whether the user is logged in and, if so, their services."""
+    client: SynergyBrowserClient | None = app.state.synergy
+    if client is None or not client.logged_in:
+        return {"logged_in": False, "services": []}
+    if not app.state.services:
+        app.state.services = await client.get_services()
+    return {"logged_in": True, "services": app.state.services}
 
 
-@app.post("/api/auth/request-token")
-async def request_token(req: EmailTokenRequest):
-    try:
-        client: SynergyClient = app.state.synergy_client
-        allow_contract = await client.request_email_token(req.email, req.premise_id)
-        app.state.allow_contract = allow_contract
-        app.state.login_method = "email"
-        return {"message": "Token sent. Check your email."}
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code == 400 and "too many attempts" in e.response.text.lower():
-            raise HTTPException(429, "Too many attempts. Try again tomorrow.")
-        raise HTTPException(e.response.status_code, f"Synergy API error: {e.response.text}")
-    except httpx.RequestError as e:
-        raise HTTPException(502, f"Could not reach Synergy API: {e}")
+# --- Analysis ---
+
+def _cache_path(req: AnalyseRequest) -> Path:
+    return DATA_DIR / f"{req.start_date}_to_{req.end_date}.json"
 
 
-@app.post("/api/auth/request-sms")
-async def request_sms(req: SmsCodeRequest):
-    try:
-        client: SynergyClient = app.state.synergy_client
-        allow_contract = await client.request_sms_code(req.mobile, req.premise_id)
-        app.state.allow_contract = allow_contract
-        app.state.login_method = "sms"
-        return {"message": "SMS code sent."}
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code == 400 and "too many attempts" in e.response.text.lower():
-            raise HTTPException(429, "Too many attempts. Try again tomorrow.")
-        raise HTTPException(e.response.status_code, f"Synergy API error: {e.response.text}")
-    except httpx.RequestError as e:
-        raise HTTPException(502, f"Could not reach Synergy API: {e}")
-
-
-@app.post("/api/auth/login")
-async def login(req: LoginRequest):
-    try:
-        client: SynergyClient = app.state.synergy_client
-        if not app.state.allow_contract:
-            raise HTTPException(400, "Request a token first.")
-
-        if req.method == "sms":
-            success = await client.login_with_sms_code(req.token, app.state.allow_contract)
-        else:
-            success = await client.login_with_email_token(req.token, app.state.allow_contract)
-
-        if not success:
-            raise HTTPException(401, "Login failed.")
-        return {"message": "Logged in."}
-    except HTTPException:
-        raise
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(e.response.status_code, f"Login failed: {e.response.text}")
-    except httpx.RequestError as e:
-        raise HTTPException(502, f"Could not reach Synergy API: {e}")
+def _load_cached(name: str) -> tuple[list[dict], str | None]:
+    path = DATA_DIR / Path(name).name  # sanitise
+    if not path.exists():
+        raise HTTPException(404, f"Cached file not found: {name}")
+    payload = json.loads(path.read_text())
+    intervals = payload["intervals"] if isinstance(payload, dict) else payload
+    for i in intervals:
+        i["timestamp"] = datetime.fromisoformat(i["timestamp"])
+    tariff = payload.get("tariff_label") if isinstance(payload, dict) else None
+    return intervals, tariff
 
 
 @app.post("/api/analyse")
 async def analyse(req: AnalyseRequest):
-    try:
-        if req.cached_file:
-            # Load from cached file — no auth required
-            cache_path = DATA_DIR / Path(req.cached_file).name  # sanitise path
-            if not cache_path.exists():
-                raise HTTPException(404, f"Cached file not found: {req.cached_file}")
-            raw_data = json.loads(cache_path.read_text())
-        else:
-            client: SynergyClient = app.state.synergy_client
+    # 1. Obtain raw intervals (timestamp, consumption_kwh, export_kwh, tariff_name)
+    if req.cached_file:
+        intervals, cached_tariff = _load_cached(req.cached_file)
+        tariff_label = req.tariff_label or cached_tariff
+    else:
+        client: SynergyBrowserClient | None = app.state.synergy
+        if client is None or not client.logged_in:
+            raise HTTPException(401, "Not logged in. Open the Synergy login first.")
+        if not req.service_id:
+            raise HTTPException(400, "service_id is required for a live fetch.")
+        try:
+            intervals = await client.get_range(req.service_id, req.start_date, req.end_date)
+        except NotLoggedIn:
+            raise HTTPException(401, "Not logged in. Open the Synergy login first.")
 
-            # Get account and device info
-            account_number = await client.get_account_number()
-            device_id = await client.get_device_id(account_number)
+        tariff_label = req.tariff_label
+        if not tariff_label:
+            svc = next((s for s in app.state.services if s["service_id"] == req.service_id), None)
+            tariff_label = svc["tariff"] if svc else None
 
-            # Fetch usage data
-            raw_data = await client.get_usage_data(account_number, device_id, req.start_date, req.end_date)
+        DATA_DIR.mkdir(exist_ok=True)
+        _cache_path(req).write_text(json.dumps({
+            "tariff_label": tariff_label,
+            "intervals": [{**i, "timestamp": i["timestamp"].isoformat()} for i in intervals],
+        }, indent=2))
 
-            # Save to cache
-            DATA_DIR.mkdir(exist_ok=True)
-            cache_file = DATA_DIR / f"{req.start_date}_to_{req.end_date}.json"
-            cache_file.write_text(json.dumps(raw_data, indent=2))
+    if not intervals:
+        raise HTTPException(400, "No interval data returned for that date range.")
 
-        # Build plan: use custom overrides if provided, otherwise auto-detect from API
-        if req.custom_tariff_periods and req.custom_supply_charge_cents is not None:
-            plan = EnergyPlan(
-                id="custom",
-                name="Custom",
-                supply_charge_cents=req.custom_supply_charge_cents,
-                tariff_periods=[
-                    TariffPeriod(
-                        name=tp.name,
-                        rate_cents=tp.rate_cents,
-                        start_time=time.fromisoformat(tp.start_time),
-                        end_time=time.fromisoformat(tp.end_time),
-                    )
-                    for tp in req.custom_tariff_periods
-                ],
-            )
-        else:
-            interval_details = raw_data.get("retrieveIntervalDetails", [])
-            if not interval_details:
-                raise HTTPException(400, "No plan details found in API response.")
-            plan = build_plan_from_api(interval_details[0])
+    # 2. Build a data-driven plan for the periods actually present
+    periods_present = sorted({i["tariff_name"] for i in intervals})
+    plan = plan_for_tariff(
+        tariff_label, periods_present,
+        supply_charge_cents=req.supply_charge_cents,
+        rate_overrides=req.rate_overrides,
+    )
 
-        # Categorise usage data
-        consumption = raw_data.get("kwHalfHourlyValues", [])
-        generation = raw_data.get("kwhHalfHourlyValuesGeneration", [])
-        start_dt = datetime.combine(req.start_date, datetime.min.time())
+    # 3. Price + simulate
+    priced = apply_rates(
+        intervals, plan.rates,
+        feed_in_peak_cents=req.feed_in_peak_cents,
+        feed_in_off_peak_cents=req.feed_in_off_peak_cents,
+    )
+    battery_result = simulate_battery(
+        priced, req.battery_capacity_kwh, req.grid_topup, req.inverter_capacity_kw
+    )
 
-        categorised = categorise_usage_data(
-            consumption, start_dt, plan, generation or None,
-            feed_in_peak_cents=req.feed_in_peak_cents,
-            feed_in_off_peak_cents=req.feed_in_off_peak_cents,
-        )
+    # 4. Summarise
+    num_days = (req.end_date - req.start_date).days + 1
+    total_supply_cost = num_days * plan.supply_charge_cents
+    total_consumption = sum(e["consumption_kwh"] for e in battery_result)
+    total_export = sum(e["export_kwh"] for e in battery_result)
+    total_import_cost = sum(e["cost_cents"] for e in battery_result)
+    total_export_credits = sum(e["export_credit_cents"] for e in battery_result)
+    total_cost_without_battery = total_import_cost + total_supply_cost - total_export_credits
 
-        # Battery simulation
-        battery_result = simulate_battery(categorised, req.battery_capacity_kwh, req.grid_topup, req.inverter_capacity_kw)
+    total_discharge_savings = sum(e["savings_cents"] for e in battery_result)
+    total_lost_feed_in = sum(e["lost_feed_in_cents"] for e in battery_result)
+    total_topup_cost = sum(e["grid_topup_cost_cents"] for e in battery_result)
+    net_savings = total_discharge_savings - total_lost_feed_in - total_topup_cost
+    total_cost_with_battery = total_cost_without_battery - net_savings
 
-        # Calculate summaries
-        num_days = (req.end_date - req.start_date).days + 1
-        total_supply_cost = num_days * plan.supply_charge_cents
+    payback_years = None
+    if req.battery_cost_dollars and net_savings > 0:
+        annual_savings = (net_savings / 100) / num_days * 365
+        payback_years = round(req.battery_cost_dollars / annual_savings, 1)
 
-        total_consumption = sum(e["consumption_kwh"] for e in battery_result)
-        total_export = sum(e["export_kwh"] for e in battery_result)
-        total_import_cost = sum(e["cost_cents"] for e in battery_result)
-        total_export_credits = sum(e["export_credit_cents"] for e in battery_result)
-        total_cost_without_battery = total_import_cost + total_supply_cost - total_export_credits
-
-        total_discharge_savings = sum(e["savings_cents"] for e in battery_result)
-        total_lost_feed_in = sum(e["lost_feed_in_cents"] for e in battery_result)
-        total_topup_cost = sum(e["grid_topup_cost_cents"] for e in battery_result)
-        net_savings = total_discharge_savings - total_lost_feed_in - total_topup_cost
-        total_cost_with_battery = total_cost_without_battery - net_savings
-
-        payback_years = None
-        if req.battery_cost_dollars and net_savings > 0:
-            period_savings_dollars = net_savings / 100
-            daily_savings = period_savings_dollars / num_days
-            annual_savings = daily_savings * 365
-            payback_years = round(req.battery_cost_dollars / annual_savings, 1)
-
-        return {
-            "plan": {
-                "name": plan.name,
-                "supply_charge_cents": plan.supply_charge_cents,
-                "tariff_periods": [p.model_dump() for p in plan.tariff_periods],
-            },
-            "summary": {
-                "total_consumption_kwh": round(total_consumption, 2),
-                "total_export_kwh": round(total_export, 2),
-                "total_cost_without_battery_dollars": round(total_cost_without_battery / 100, 2),
-                "total_cost_with_battery_dollars": round(total_cost_with_battery / 100, 2),
-                "period_savings_dollars": round(net_savings / 100, 2),
-                "export_credits_dollars": round(total_export_credits / 100, 2),
-                "payback_years": payback_years,
-                "num_days": num_days,
-                "supply_cost_dollars": round(total_supply_cost / 100, 2),
-            },
-            "intervals": [
-                {
-                    "timestamp": e["timestamp"].isoformat(),
-                    "consumption_kwh": e["consumption_kwh"],
-                    "export_kwh": e["export_kwh"],
-                    "tariff_name": e["tariff_name"],
-                    "rate_cents": e["rate_cents"],
-                    "cost_cents": round(e["cost_cents"], 4),
-                    "battery_kwh": round(e["battery_kwh"], 4),
-                    "discharge_kwh": round(e["discharge_kwh"], 4),
-                    "savings_cents": round(e["savings_cents"], 4),
-                    "grid_topup_kwh": round(e["grid_topup_kwh"], 4),
-                }
-                for e in battery_result
-            ],
-        }
-    except HTTPException:
-        raise
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(e.response.status_code, f"Synergy API error: {e.response.text}")
-    except httpx.RequestError as e:
-        raise HTTPException(502, f"Could not reach Synergy API: {e}")
-    except KeyError as e:
-        raise HTTPException(400, f"Unsupported energy plan: {e}")
+    return {
+        "plan": {
+            "name": plan.name,
+            "supply_charge_cents": plan.supply_charge_cents,
+            "rates": {display_name(k): v for k, v in plan.rates.items()},
+            "rates_by_period": plan.rates,
+        },
+        "summary": {
+            "total_consumption_kwh": round(total_consumption, 2),
+            "total_export_kwh": round(total_export, 2),
+            "total_cost_without_battery_dollars": round(total_cost_without_battery / 100, 2),
+            "total_cost_with_battery_dollars": round(total_cost_with_battery / 100, 2),
+            "period_savings_dollars": round(net_savings / 100, 2),
+            "export_credits_dollars": round(total_export_credits / 100, 2),
+            "payback_years": payback_years,
+            "num_days": num_days,
+            "supply_cost_dollars": round(total_supply_cost / 100, 2),
+        },
+        "intervals": [
+            {
+                "timestamp": e["timestamp"].isoformat(),
+                "consumption_kwh": e["consumption_kwh"],
+                "export_kwh": e["export_kwh"],
+                "tariff_name": e["tariff_name"],
+                "rate_cents": e["rate_cents"],
+                "cost_cents": round(e["cost_cents"], 4),
+                "battery_kwh": round(e["battery_kwh"], 4),
+                "discharge_kwh": round(e["discharge_kwh"], 4),
+                "savings_cents": round(e["savings_cents"], 4),
+                "grid_topup_kwh": round(e["grid_topup_kwh"], 4),
+            }
+            for e in battery_result
+        ],
+    }
 
 
 # Serve frontend
