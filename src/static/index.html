@@ -54,38 +54,15 @@
                         <h2>Connect to Synergy</h2>
                     </div>
 
-                    <div class="auth-step" id="stepAddress">
-                        <label class="field-label">Premise address</label>
-                        <div class="input-row">
-                            <input type="text" id="addressInput" placeholder="e.g. 12 Example St, Suburb" class="input">
-                            <button id="lookupBtn" class="btn btn-primary" onclick="searchPremise()">Look up</button>
-                        </div>
-                        <div class="field-hint">Must match the supply address on your Synergy bill</div>
-                        <div id="premiseResults" class="premise-results hidden"></div>
+                    <div class="auth-step" id="stepLogin">
+                        <div class="field-hint">A browser window opens on the Synergy portal. Log in as normal (email/password + your MFA code). This app then reads your usage automatically — your password never touches this app.</div>
+                        <button id="loginBtn" class="btn btn-primary" onclick="openLogin()">Open Synergy login</button>
+                        <div id="loginProgress" class="field-hint hidden">Waiting for you to finish logging in…</div>
                     </div>
 
-                    <div class="auth-step disabled" id="stepMethod">
-                        <label class="field-label">Verification method</label>
-                        <div class="method-toggle">
-                            <button class="method-btn active" id="methodEmail" onclick="setLoginMethod('email')">Email</button>
-                            <button class="method-btn" id="methodSms" onclick="setLoginMethod('sms')">SMS</button>
-                        </div>
-                        <div id="emailField" class="input-row">
-                            <input type="email" id="emailInput" placeholder="your@email.com" class="input" disabled>
-                            <button id="otpBtn" class="btn btn-primary" onclick="requestToken()" disabled>Send OTP</button>
-                        </div>
-                        <div id="smsField" class="input-row hidden">
-                            <input type="tel" id="mobileInput" placeholder="04xx xxx xxx" class="input" disabled>
-                            <button id="smsBtn" class="btn btn-primary" onclick="requestSmsCode()" disabled>Send SMS</button>
-                        </div>
-                    </div>
-
-                    <div class="auth-step disabled" id="stepOtp">
-                        <label class="field-label">Verification code</label>
-                        <div class="input-row">
-                            <input type="text" id="otpInput" placeholder="6-digit code" class="input" maxlength="6" disabled>
-                            <button id="loginBtn" class="btn btn-primary" onclick="loginWithToken()" disabled>Login</button>
-                        </div>
+                    <div class="auth-step disabled" id="stepService">
+                        <label class="field-label">Service / account</label>
+                        <select id="serviceSelector" class="input" onchange="onServiceChange()"></select>
                     </div>
                 </div>
 
@@ -105,11 +82,9 @@
                         </div>
 
                         <div class="field-group plan-selector">
-                            <label class="field-label">Tariff plan</label>
-                            <select id="planSelector" class="input">
-                                <option value="auto">Auto-detect</option>
-                            </select>
-                            <div id="tariffFields" class="tariff-fields hidden"></div>
+                            <label class="field-label">Tariff rates <span class="optional">(editable)</span></label>
+                            <div class="field-hint">Prefilled from your plan where known — adjust to match your bill.</div>
+                            <div id="tariffFields" class="tariff-fields"></div>
                         </div>
 
                         <div class="field-group">

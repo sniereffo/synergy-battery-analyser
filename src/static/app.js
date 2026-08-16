@@ -25,38 +25,34 @@ function toggleTheme() {
 // Apply theme before DOM renders to prevent flash
 initTheme();
 
-let selectedPremiseId = null;
 let analysisResult = null;
 let currentChart = null;
 let currentTab = 'daily';
 let batteryDayIndex = 0;
 let rateSchedules = null;
-let loginMethod = 'email';
+let services = [];
+let selectedServiceId = null;
+let loggedIn = false;
+let statusPoll = null;
 
-const PLAN_TIME_WINDOWS = {
-    'Home Plan (A1)': {
-        'Anytime': [{ start: '00:00', end: '00:00' }],
-    },
-    'Midday Saver': {
-        'Super Off Peak': [{ start: '09:00', end: '15:00' }],
-        'Peak': [{ start: '15:00', end: '21:00' }],
-        'Off Peak': [{ start: '21:00', end: '09:00' }],
-    },
-    'EV Add on': {
-        'Super Off Peak': [{ start: '09:00', end: '15:00' }],
-        'Peak': [{ start: '15:00', end: '21:00' }],
-        'Off Peak': [{ start: '06:00', end: '09:00' }, { start: '21:00', end: '23:00' }],
-        'Overnight': [{ start: '23:00', end: '06:00' }],
-    },
+// Display labels for the API's tariff-period column names.
+const PERIOD_LABELS = {
+    'PEAK': 'Peak',
+    'OFF_PEAK': 'Off Peak',
+    'OFF_PEAK(AM)': 'Off Peak (AM)',
+    'OVERNIGHT': 'Overnight',
+    'SUPER_OFFPEAK': 'Super Off Peak',
 };
+const ALL_PERIODS = ['PEAK', 'OFF_PEAK', 'OFF_PEAK(AM)', 'OVERNIGHT', 'SUPER_OFFPEAK'];
 
-// Tariff color map
+// Tariff color map — keyed by both API column names and display names so charts
+// (which use the API names) and the plan banner (display names) stay consistent.
 const TARIFF_COLORS = {
-    'Peak': '#ef4444',
-    'Off Peak': '#3b82f6',
-    'Super Off Peak': '#22c55e',
-    'Overnight': '#8b5cf6',
-    'Anytime': '#f59e0b',
+    'PEAK': '#ef4444', 'Peak': '#ef4444',
+    'OFF_PEAK': '#3b82f6', 'Off Peak': '#3b82f6',
+    'OFF_PEAK(AM)': '#60a5fa', 'Off Peak (AM)': '#60a5fa',
+    'SUPER_OFFPEAK': '#22c55e', 'Super Off Peak': '#22c55e',
+    'OVERNIGHT': '#8b5cf6', 'Overnight': '#8b5cf6',
 };
 
 function getTariffColor(name) {
@@ -66,36 +62,17 @@ function getTariffColor(name) {
 // === Init ===
 
 document.addEventListener('DOMContentLoaded', () => {
-    // Set default date range: 12 months prior to today
+    // Default date range: last 3 months (a full day-by-day year fetch is slow —
+    // the portal only serves one day of half-hourly data per request).
     const today = new Date();
-    const yearAgo = new Date(today);
-    yearAgo.setFullYear(yearAgo.getFullYear() - 1);
+    const start = new Date(today);
+    start.setMonth(start.getMonth() - 3);
     document.getElementById('endDate').value = fmt(today);
-    document.getElementById('startDate').value = fmt(yearAgo);
+    document.getElementById('startDate').value = fmt(start);
 
     // Fetch rate schedules and cached data files
     fetchRateSchedules();
     fetchDataFiles();
-
-    // Plan selector change handler
-    document.getElementById('planSelector').addEventListener('change', (e) => {
-        const planName = e.target.value;
-        const tariffFields = document.getElementById('tariffFields');
-        const topupGroup = document.getElementById('gridTopupGroup');
-        const topupCheckbox = document.getElementById('gridTopup');
-        if (planName === 'auto' || !rateSchedules || !rateSchedules[planName]) {
-            tariffFields.classList.add('hidden');
-            tariffFields.innerHTML = '';
-            topupGroup.classList.remove('hidden');
-            return;
-        }
-        renderTariffFields(planName);
-        tariffFields.classList.remove('hidden');
-
-        const isFlatRate = Object.keys(PLAN_TIME_WINDOWS[planName] || {}).length <= 1;
-        topupGroup.classList.toggle('hidden', isFlatRate);
-        if (isFlatRate) topupCheckbox.checked = false;
-    });
 
     // Tab switching
     document.getElementById('chartTabs').addEventListener('click', (e) => {
@@ -122,45 +99,48 @@ function fmt(d) {
 async function fetchRateSchedules() {
     try {
         const res = await fetch('/api/rate-schedules');
-        if (!res.ok) return;
-        rateSchedules = await res.json();
-
-        const selector = document.getElementById('planSelector');
-        Object.keys(rateSchedules).forEach(name => {
-            const opt = document.createElement('option');
-            opt.value = name;
-            opt.textContent = name;
-            selector.appendChild(opt);
-        });
+        if (res.ok) rateSchedules = await res.json();
     } catch (e) {
-        // Rate schedules are optional; silently ignore fetch errors
+        // Rate schedules are optional prefill; silently ignore fetch errors.
     }
+    // Render defaults so the panel isn't empty before a service is chosen.
+    renderRateFields(null);
 }
 
-function renderTariffFields(planName) {
-    const plan = rateSchedules[planName];
-    if (!plan) return;
-
+// Render editable per-period rate fields, prefilled from the matching schedule.
+function renderRateFields(tariffLabel) {
     const container = document.getElementById('tariffFields');
+    const key = (tariffLabel || '').trim().toUpperCase();
+    let schedule = rateSchedules && rateSchedules[key];
+    const matched = !!schedule;
+    // Fall back to the first known schedule so the panel is never all-zero;
+    // the user adjusts to their own plan's rates.
+    if (!schedule && rateSchedules) {
+        const firstKey = Object.keys(rateSchedules)[0];
+        schedule = firstKey ? rateSchedules[firstKey] : null;
+    }
+    const supply = schedule ? schedule.supply_charge_cents : 116.0505;
+    const rates = schedule ? schedule.rates : {};
+    const periods = Object.keys(rates).length ? Object.keys(rates) : ALL_PERIODS;
+
     let html = `
         <div class="tariff-field">
             <label>Supply charge</label>
-            <input type="number" class="input" id="tariffSupplyCharge" step="0.0001" value="${plan.supply_charge_cents}">
+            <input type="number" class="input" id="tariffSupplyCharge" step="0.0001" value="${supply}">
             <span class="tariff-unit">c/day</span>
-        </div>
-    `;
-
-    Object.entries(plan.rates).forEach(([periodName, rate]) => {
-        const fieldId = 'tariffRate_' + periodName.replace(/\s+/g, '_');
+        </div>`;
+    periods.forEach(p => {
+        const r = rates[p] !== undefined ? rates[p] : 0;
         html += `
             <div class="tariff-field">
-                <label>${periodName}</label>
-                <input type="number" class="input" id="${fieldId}" step="0.0001" value="${rate}" data-period="${periodName}">
+                <label>${PERIOD_LABELS[p] || p}</label>
+                <input type="number" class="input" step="0.0001" value="${r}" data-period="${p}">
                 <span class="tariff-unit">c/kWh</span>
-            </div>
-        `;
+            </div>`;
     });
-
+    if (tariffLabel && !matched) {
+        html += `<div class="field-hint">No preset for "${tariffLabel}" — showing defaults; adjust to your plan's rates.</div>`;
+    }
     container.innerHTML = html;
 }
 
@@ -205,178 +185,94 @@ function toast(msg, type = '') {
     setTimeout(() => el.classList.remove('visible'), 3500);
 }
 
-// === Auth Flow ===
+// === Auth Flow (browser-assisted) ===
 
-async function searchPremise() {
-    const addr = document.getElementById('addressInput').value.trim();
-    if (!addr) return;
-
-    const btn = document.getElementById('lookupBtn');
-    btn.disabled = true;
-    btn.textContent = '...';
-
-    try {
-        const res = await fetch('/api/premise/search', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ address: addr }),
-        });
-        const data = await res.json();
-
-        const container = document.getElementById('premiseResults');
-        container.innerHTML = '';
-        container.classList.remove('hidden');
-
-        if (!data.length) {
-            container.innerHTML = '<div class="premise-item" style="color:var(--text-muted)">No results found</div>';
-            return;
-        }
-
-        data.forEach(p => {
-            const item = document.createElement('div');
-            item.className = 'premise-item';
-            item.innerHTML = `${p.label} <span class="premise-code">${p.code}</span>`;
-            item.addEventListener('click', () => selectPremise(p));
-            container.appendChild(item);
-        });
-    } catch (e) {
-        toast('Failed to search: ' + e.message, 'error');
-    } finally {
-        btn.disabled = false;
-        btn.textContent = 'Look up';
-    }
+function setStatus(state, text) {
+    const status = document.getElementById('authStatus');
+    const cls = state === 'online' ? 'online' : state === 'connecting' ? 'connecting' : 'offline';
+    status.querySelector('.status-dot').className = 'status-dot ' + cls;
+    status.querySelector('.status-text').textContent = text;
 }
 
-function selectPremise(premise) {
-    selectedPremiseId = premise.code;
-    document.getElementById('addressInput').value = premise.label;
-    document.getElementById('premiseResults').classList.add('hidden');
-    document.getElementById('stepAddress').classList.add('completed');
-
-    // Enable method step
-    const stepMethod = document.getElementById('stepMethod');
-    stepMethod.classList.remove('disabled');
-    document.getElementById('emailInput').disabled = false;
-    document.getElementById('otpBtn').disabled = false;
-    document.getElementById('mobileInput').disabled = false;
-    document.getElementById('smsBtn').disabled = false;
-}
-
-function setLoginMethod(method) {
-    loginMethod = method;
-    document.getElementById('methodEmail').classList.toggle('active', method === 'email');
-    document.getElementById('methodSms').classList.toggle('active', method === 'sms');
-    document.getElementById('emailField').classList.toggle('hidden', method !== 'email');
-    document.getElementById('smsField').classList.toggle('hidden', method !== 'sms');
-}
-
-async function requestToken() {
-    const email = document.getElementById('emailInput').value.trim();
-    if (!email || !selectedPremiseId) return;
-
-    const btn = document.getElementById('otpBtn');
-    btn.disabled = true;
-    btn.textContent = '...';
-
-    try {
-        const res = await fetch('/api/auth/request-token', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email, premise_id: selectedPremiseId }),
-        });
-
-        if (!res.ok) throw new Error(await res.text());
-
-        document.getElementById('stepMethod').classList.add('completed');
-        toast('OTP sent — check your email', 'success');
-
-        // Enable OTP step
-        const stepOtp = document.getElementById('stepOtp');
-        stepOtp.classList.remove('disabled');
-        document.getElementById('otpInput').disabled = false;
-        document.getElementById('loginBtn').disabled = false;
-        document.getElementById('otpInput').focus();
-    } catch (e) {
-        toast('Failed to send OTP: ' + e.message, 'error');
-    } finally {
-        btn.disabled = false;
-        btn.textContent = 'Send OTP';
-    }
-}
-
-async function requestSmsCode() {
-    const mobile = document.getElementById('mobileInput').value.trim();
-    if (!mobile || !selectedPremiseId) return;
-
-    const btn = document.getElementById('smsBtn');
-    btn.disabled = true;
-    btn.textContent = '...';
-
-    try {
-        const res = await fetch('/api/auth/request-sms', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ mobile, premise_id: selectedPremiseId }),
-        });
-
-        if (!res.ok) throw new Error(await res.text());
-
-        document.getElementById('stepMethod').classList.add('completed');
-        toast('SMS code sent — check your phone', 'success');
-
-        // Enable OTP step
-        const stepOtp = document.getElementById('stepOtp');
-        stepOtp.classList.remove('disabled');
-        document.getElementById('otpInput').disabled = false;
-        document.getElementById('loginBtn').disabled = false;
-        document.getElementById('otpInput').focus();
-    } catch (e) {
-        toast('Failed to send SMS: ' + e.message, 'error');
-    } finally {
-        btn.disabled = false;
-        btn.textContent = 'Send SMS';
-    }
-}
-
-async function loginWithToken() {
-    const token = document.getElementById('otpInput').value.trim();
-    if (!token) return;
-
+async function openLogin() {
     const btn = document.getElementById('loginBtn');
     btn.disabled = true;
-    btn.textContent = '...';
-
+    btn.textContent = 'Opening browser…';
     try {
-        const res = await fetch('/api/auth/login', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ token, method: loginMethod }),
-        });
-
-        if (!res.ok) throw new Error('Login failed');
-
-        document.getElementById('stepOtp').classList.add('completed');
-
-        // Update header status
-        const status = document.getElementById('authStatus');
-        status.querySelector('.status-dot').className = 'status-dot online';
-        status.querySelector('.status-text').textContent = 'Connected';
-
-        document.getElementById('analyseBtn').disabled = !canAnalyse();
-
-        toast('Logged in successfully', 'success');
+        const res = await fetch('/api/auth/open-login', { method: 'POST' });
+        if (!res.ok) throw new Error(await res.text());
+        document.getElementById('loginProgress').classList.remove('hidden');
+        setStatus('connecting', 'Waiting for login…');
+        startStatusPolling();
     } catch (e) {
-        toast('Login failed — check your code', 'error');
-    } finally {
+        toast('Could not open login: ' + e.message, 'error');
         btn.disabled = false;
-        btn.textContent = 'Login';
+        btn.textContent = 'Open Synergy login';
     }
+}
+
+function startStatusPolling() {
+    if (statusPoll) clearInterval(statusPoll);
+    statusPoll = setInterval(pollStatus, 2000);
+    pollStatus();
+}
+
+async function pollStatus() {
+    try {
+        const res = await fetch('/api/auth/status');
+        const data = await res.json();
+        if (data.logged_in) {
+            loggedIn = true;
+            services = data.services || [];
+            clearInterval(statusPoll);
+            statusPoll = null;
+            onLoggedIn();
+        }
+    } catch (e) {
+        // transient — keep polling
+    }
+}
+
+function onLoggedIn() {
+    setStatus('online', 'Connected');
+    document.getElementById('loginProgress').classList.add('hidden');
+    document.getElementById('stepLogin').classList.add('completed');
+    const btn = document.getElementById('loginBtn');
+    btn.textContent = 'Logged in';
+    btn.disabled = true;
+    populateServices();
+    toast('Logged in successfully', 'success');
+}
+
+function populateServices() {
+    const step = document.getElementById('stepService');
+    step.classList.remove('disabled');
+    const sel = document.getElementById('serviceSelector');
+    sel.innerHTML = '';
+    services.forEach(s => {
+        const opt = document.createElement('option');
+        opt.value = s.service_id;
+        opt.textContent = `${s.account_number} — ${s.address}${s.tariff ? ' (' + s.tariff + ')' : ''}`;
+        opt.dataset.tariff = s.tariff || '';
+        sel.appendChild(opt);
+    });
+    if (services.length) {
+        sel.value = services[0].service_id;
+        onServiceChange();
+    }
+}
+
+function onServiceChange() {
+    const sel = document.getElementById('serviceSelector');
+    selectedServiceId = sel.value;
+    const tariff = sel.selectedOptions[0] ? sel.selectedOptions[0].dataset.tariff : '';
+    renderRateFields(tariff);
+    document.getElementById('analyseBtn').disabled = !canAnalyse();
 }
 
 function canAnalyse() {
     const hasCachedFile = !!document.getElementById('dataSource').value;
-    const isLoggedIn = !!document.querySelector('.status-dot.online');
-    return hasCachedFile || isLoggedIn;
+    return hasCachedFile || (loggedIn && !!selectedServiceId);
 }
 
 // === Analysis ===
@@ -391,7 +287,20 @@ async function runAnalysis() {
     spinner.classList.remove('hidden');
 
     const cachedFile = document.getElementById('dataSource').value || null;
+
+    // Collect editable per-period rates and supply charge.
+    const rateOverrides = {};
+    document.querySelectorAll('#tariffFields input[data-period]').forEach(input => {
+        rateOverrides[input.dataset.period] = parseFloat(input.value) || 0;
+    });
+    const supplyInput = document.getElementById('tariffSupplyCharge');
+    const serviceSel = document.getElementById('serviceSelector');
+    const tariffLabel = serviceSel && serviceSel.selectedOptions[0]
+        ? serviceSel.selectedOptions[0].dataset.tariff : null;
+
     const payload = {
+        service_id: selectedServiceId,
+        tariff_label: tariffLabel || null,
         start_date: document.getElementById('startDate').value,
         end_date: document.getElementById('endDate').value,
         battery_capacity_kwh: parseFloat(document.getElementById('batteryCapacity').value) || 15,
@@ -400,33 +309,13 @@ async function runAnalysis() {
         grid_topup: document.getElementById('gridTopup').checked,
         feed_in_peak_cents: parseFloat(document.getElementById('feedInPeak').value) || 0,
         feed_in_off_peak_cents: parseFloat(document.getElementById('feedInOffPeak').value) || 0,
+        supply_charge_cents: supplyInput ? parseFloat(supplyInput.value) : null,
+        rate_overrides: rateOverrides,
         cached_file: cachedFile,
     };
 
-    const selectedPlan = document.getElementById('planSelector').value;
-    if (selectedPlan !== 'auto' && rateSchedules && rateSchedules[selectedPlan]) {
-        const supplyInput = document.getElementById('tariffSupplyCharge');
-        if (supplyInput) {
-            payload.custom_supply_charge_cents = parseFloat(supplyInput.value);
-        }
-
-        const timeWindows = PLAN_TIME_WINDOWS[selectedPlan] || {};
-        const tariffPeriods = [];
-        const rateInputs = document.querySelectorAll('#tariffFields input[data-period]');
-        rateInputs.forEach(input => {
-            const periodName = input.dataset.period;
-            const rateCents = parseFloat(input.value);
-            const windows = timeWindows[periodName] || [{ start: '00:00', end: '00:00' }];
-            windows.forEach(w => {
-                tariffPeriods.push({
-                    name: periodName,
-                    rate_cents: rateCents,
-                    start_time: w.start,
-                    end_time: w.end,
-                });
-            });
-        });
-        payload.custom_tariff_periods = tariffPeriods;
+    if (!cachedFile) {
+        btnText.textContent = 'Fetching (one day at a time)…';
     }
 
     try {
@@ -477,10 +366,10 @@ function showSetup() {
 
 function renderPlanBanner() {
     const plan = analysisResult.plan;
-    const periods = plan.tariff_periods.map(p =>
+    const periods = Object.entries(plan.rates).map(([name, rate]) =>
         `<span class="plan-period">
-            <span class="dot" style="background:${getTariffColor(p.name)}"></span>
-            ${p.name} ${p.rate_cents.toFixed(1)}c/kWh
+            <span class="dot" style="background:${getTariffColor(name)}"></span>
+            ${name} ${rate.toFixed(1)}c/kWh
         </span>`
     ).join('');
 
