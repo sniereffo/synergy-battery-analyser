@@ -1,0 +1,350 @@
+{
+  "ChartData": {
+    "Devices": [
+      "000000000000000000"
+    ],
+    "Response": [
+      {
+        "BillingStatus": "Billed",
+        "OVERNIGHT": "0.254",
+        "VAL_SOLAR": "0.000",
+        "VAL_TIME": "0000",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "OVERNIGHT": "0.240",
+        "VAL_SOLAR": "0.000",
+        "VAL_TIME": "0030",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "OVERNIGHT": "0.217",
+        "VAL_SOLAR": "0.000",
+        "VAL_TIME": "0100",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "OVERNIGHT": "0.199",
+        "VAL_SOLAR": "0.000",
+        "VAL_TIME": "0130",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "OVERNIGHT": "0.212",
+        "VAL_SOLAR": "0.000",
+        "VAL_TIME": "0200",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "OVERNIGHT": "0.216",
+        "VAL_SOLAR": "0.000",
+        "VAL_TIME": "0230",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "OVERNIGHT": "0.206",
+        "VAL_SOLAR": "0.000",
+        "VAL_TIME": "0300",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "OVERNIGHT": "0.215",
+        "VAL_SOLAR": "0.000",
+        "VAL_TIME": "0330",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "OVERNIGHT": "0.204",
+        "VAL_SOLAR": "0.000",
+        "VAL_TIME": "0400",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "OVERNIGHT": "0.214",
+        "VAL_SOLAR": "0.000",
+        "VAL_TIME": "0430",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "OVERNIGHT": "0.219",
+        "VAL_SOLAR": "0.000",
+        "VAL_TIME": "0500",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "OVERNIGHT": "0.221",
+        "VAL_SOLAR": "0.000",
+        "VAL_TIME": "0530",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "OFF_PEAK(AM)": "0.217",
+        "VAL_SOLAR": "0.000",
+        "VAL_TIME": "0600",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "OFF_PEAK(AM)": "0.228",
+        "VAL_SOLAR": "0.000",
+        "VAL_TIME": "0630",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "OFF_PEAK(AM)": "0.191",
+        "VAL_SOLAR": "0.000",
+        "VAL_TIME": "0700",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "OFF_PEAK(AM)": "0.259",
+        "VAL_SOLAR": "0.007",
+        "VAL_TIME": "0730",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "OFF_PEAK(AM)": "0.003",
+        "VAL_SOLAR": "0.091",
+        "VAL_TIME": "0800",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "OFF_PEAK(AM)": "0.088",
+        "VAL_SOLAR": "0.142",
+        "VAL_TIME": "0830",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "SUPER_OFFPEAK": "0.509",
+        "VAL_SOLAR": "0.302",
+        "VAL_TIME": "0900",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "SUPER_OFFPEAK": "3.217",
+        "VAL_SOLAR": "0.000",
+        "VAL_TIME": "0930",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "SUPER_OFFPEAK": "3.297",
+        "VAL_SOLAR": "0.000",
+        "VAL_TIME": "1000",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "SUPER_OFFPEAK": "1.269",
+        "VAL_SOLAR": "0.609",
+        "VAL_TIME": "1030",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "SUPER_OFFPEAK": "0.000",
+        "VAL_SOLAR": "1.337",
+        "VAL_TIME": "1100",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "SUPER_OFFPEAK": "0.000",
+        "VAL_SOLAR": "1.679",
+        "VAL_TIME": "1130",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "SUPER_OFFPEAK": "0.000",
+        "VAL_SOLAR": "1.815",
+        "VAL_TIME": "1200",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "SUPER_OFFPEAK": "0.000",
+        "VAL_SOLAR": "1.877",
+        "VAL_TIME": "1230",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "SUPER_OFFPEAK": "0.019",
+        "VAL_SOLAR": "0.361",
+        "VAL_TIME": "1300",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "SUPER_OFFPEAK": "0.000",
+        "VAL_SOLAR": "0.233",
+        "VAL_TIME": "1330",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "SUPER_OFFPEAK": "0.000",
+        "VAL_SOLAR": "1.438",
+        "VAL_TIME": "1400",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "SUPER_OFFPEAK": "0.000",
+        "VAL_SOLAR": "1.666",
+        "VAL_TIME": "1430",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "PEAK": "0.000",
+        "VAL_SOLAR": "1.533",
+        "VAL_TIME": "1500",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "PEAK": "0.000",
+        "VAL_SOLAR": "1.107",
+        "VAL_TIME": "1530",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "PEAK": "0.000",
+        "VAL_SOLAR": "0.944",
+        "VAL_TIME": "1600",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "PEAK": "0.000",
+        "VAL_SOLAR": "0.570",
+        "VAL_TIME": "1630",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "PEAK": "0.062",
+        "VAL_SOLAR": "0.100",
+        "VAL_TIME": "1700",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "PEAK": "0.273",
+        "VAL_SOLAR": "0.000",
+        "VAL_TIME": "1730",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "PEAK": "0.317",
+        "VAL_SOLAR": "0.000",
+        "VAL_TIME": "1800",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "PEAK": "0.924",
+        "VAL_SOLAR": "0.000",
+        "VAL_TIME": "1830",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "PEAK": "0.361",
+        "VAL_SOLAR": "0.000",
+        "VAL_TIME": "1900",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "PEAK": "0.317",
+        "VAL_SOLAR": "0.000",
+        "VAL_TIME": "1930",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "PEAK": "0.470",
+        "VAL_SOLAR": "0.000",
+        "VAL_TIME": "2000",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "PEAK": "0.485",
+        "VAL_SOLAR": "0.000",
+        "VAL_TIME": "2030",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "OFF_PEAK": "0.437",
+        "VAL_SOLAR": "0.000",
+        "VAL_TIME": "2100",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "OFF_PEAK": "0.413",
+        "VAL_SOLAR": "0.000",
+        "VAL_TIME": "2130",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "OFF_PEAK": "0.397",
+        "VAL_SOLAR": "0.000",
+        "VAL_TIME": "2200",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "OFF_PEAK": "0.349",
+        "VAL_SOLAR": "0.000",
+        "VAL_TIME": "2230",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "OVERNIGHT": "0.357",
+        "VAL_SOLAR": "0.000",
+        "VAL_TIME": "2300",
+        "VAL_DAY": "2026-08-02"
+      },
+      {
+        "BillingStatus": "Billed",
+        "OVERNIGHT": "0.221",
+        "VAL_SOLAR": "0.000",
+        "VAL_TIME": "2330",
+        "VAL_DAY": "2026-08-02"
+      }
+    ],
+    "errorCode": "INVOKE-200",
+    "error": "OK"
+  },
+  "ChartType": "INTERVAL_DATA",
+  "IntervalType": "DAILY",
+  "Total_Cost": 4.44
+}
