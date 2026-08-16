@@ -107,26 +107,47 @@ async function fetchRateSchedules() {
     renderRateFields(null);
 }
 
-// Render editable per-period rate fields, prefilled from the matching schedule.
-function renderRateFields(tariffLabel) {
+// Fetch current rates for a tariff (live from Synergy, falling back to
+// defaults server-side) and render the editable fields.
+async function fetchAndRenderRates(tariffLabel) {
+    let data = null;
+    try {
+        const res = await fetch('/api/rates?tariff=' + encodeURIComponent(tariffLabel || ''));
+        if (res.ok) data = await res.json();
+    } catch (e) {
+        // fall back to local prefill below
+    }
+    renderRateFields(tariffLabel, data);
+}
+
+// Render editable per-period rate fields. Uses server-fetched rates when
+// provided (live from Synergy or default), else the local prefill schedule.
+function renderRateFields(tariffLabel, fetched) {
     const container = document.getElementById('tariffFields');
     const key = (tariffLabel || '').trim().toUpperCase();
-    let schedule = rateSchedules && rateSchedules[key];
-    const matched = !!schedule;
-    // Fall back to the first known schedule so the panel is never all-zero;
-    // the user adjusts to their own plan's rates.
-    if (!schedule && rateSchedules) {
-        const firstKey = Object.keys(rateSchedules)[0];
-        schedule = firstKey ? rateSchedules[firstKey] : null;
+
+    let supply, rates, source;
+    if (fetched && fetched.rates && Object.keys(fetched.rates).length) {
+        supply = fetched.supply_charge_cents;
+        rates = fetched.rates;
+        source = fetched.source;
+    } else {
+        // Fall back to the first known schedule so the panel is never all-zero.
+        let schedule = rateSchedules && rateSchedules[key];
+        if (!schedule && rateSchedules) {
+            const firstKey = Object.keys(rateSchedules)[0];
+            schedule = firstKey ? rateSchedules[firstKey] : null;
+        }
+        supply = schedule ? schedule.supply_charge_cents : 116.0505;
+        rates = schedule ? schedule.rates : {};
+        source = rateSchedules && rateSchedules[key] ? 'default' : 'none';
     }
-    const supply = schedule ? schedule.supply_charge_cents : 116.0505;
-    const rates = schedule ? schedule.rates : {};
     const periods = Object.keys(rates).length ? Object.keys(rates) : ALL_PERIODS;
 
     let html = `
         <div class="tariff-field">
             <label>Supply charge</label>
-            <input type="number" class="input" id="tariffSupplyCharge" step="0.0001" value="${supply}">
+            <input type="number" class="input" id="tariffSupplyCharge" step="0.0001" value="${supply != null ? supply : ''}">
             <span class="tariff-unit">c/day</span>
         </div>`;
     periods.forEach(p => {
@@ -138,7 +159,9 @@ function renderRateFields(tariffLabel) {
                 <span class="tariff-unit">c/kWh</span>
             </div>`;
     });
-    if (tariffLabel && !matched) {
+    if (source === 'synergy') {
+        html += `<div class="field-hint">✓ Rates sourced live from Synergy — adjust if your plan differs.</div>`;
+    } else if (tariffLabel && source !== 'default') {
         html += `<div class="field-hint">No preset for "${tariffLabel}" — showing defaults; adjust to your plan's rates.</div>`;
     }
     container.innerHTML = html;
@@ -266,7 +289,7 @@ function onServiceChange() {
     const sel = document.getElementById('serviceSelector');
     selectedServiceId = sel.value;
     const tariff = sel.selectedOptions[0] ? sel.selectedOptions[0].dataset.tariff : '';
-    renderRateFields(tariff);
+    fetchAndRenderRates(tariff);
     document.getElementById('analyseBtn').disabled = !canAnalyse();
 }
 

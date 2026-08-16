@@ -11,6 +11,7 @@ import sys
 from .browser_client import SynergyBrowserClient, NotLoggedIn
 from .chartdata import parse_halfhourly_response, apply_rates  # noqa: F401 (parse used via client)
 from .models import RATE_SCHEDULES, plan_for_tariff, display_name
+from .rates import fetch_plan_rates
 from .battery import simulate_battery
 
 
@@ -69,6 +70,27 @@ def health():
 @app.get("/api/rate-schedules")
 def list_rate_schedules():
     return RATE_SCHEDULES
+
+
+@app.get("/api/rates")
+async def get_rates(tariff: str | None = None):
+    """Current rates for a tariff: live from Synergy's plan page if available,
+    otherwise the built-in prefill defaults."""
+    scraped = await fetch_plan_rates(tariff)
+    if scraped and scraped.get("rates"):
+        return {
+            "source": "synergy",
+            "supply_charge_cents": scraped["supply_charge_cents"],
+            "rates": scraped["rates"],
+        }
+    sched = RATE_SCHEDULES.get((tariff or "").strip().upper())
+    if sched:
+        return {
+            "source": "default",
+            "supply_charge_cents": sched["supply_charge_cents"],
+            "rates": sched["rates"],
+        }
+    return {"source": "none", "supply_charge_cents": None, "rates": {}}
 
 
 @app.get("/api/data/files")
