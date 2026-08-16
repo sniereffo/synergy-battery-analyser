@@ -33,7 +33,13 @@ async def main():
     for s in services:
         print(f"  {s['service_id']}  {s['account_number']}  {s['tariff']}  {s['address']}")
     if not services:
-        print("No services returned — check the response shape.")
+        print("No services returned — dumping raw getLinkedServices response for diagnosis:")
+        import json
+        raw = await client._call_apex(
+            "", "CommunityServiceController", "getLinkedServices",
+            {"contactId": None, "accountId": None},
+        )
+        print(json.dumps(raw, indent=2)[:2000])
         await client.close()
         return
 

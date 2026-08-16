@@ -16,8 +16,8 @@ from playwright.async_api import async_playwright
 from .aura import (
     build_apex_action,
     build_chartdata_input,
+    build_ip_action,
     build_message,
-    build_service_info_input,
     parse_ip_result,
 )
 from .chartdata import parse_halfhourly_response
@@ -101,12 +101,8 @@ class SynergyBrowserClient:
         self._request_id += 1
         return self._request_id
 
-    async def _call_ip(self, ip_method: str, ip_input: dict) -> dict:
-        """Invoke an Integration Procedure and return its IPResult."""
-        if not self.logged_in:
-            raise NotLoggedIn("Log in via the browser first")
-
-        action = build_apex_action(ip_method, ip_input, self._next_id())
+    async def _post_action(self, action: dict) -> dict:
+        """POST a single Aura action and return its parsed result."""
         form = {
             "message": build_message([action]),
             "aura.context": self._aura_context,
@@ -117,21 +113,40 @@ class SynergyBrowserClient:
         resp = await self._context.request.post(
             f"https://my.synergy.net.au{AURA_PATH}?r={self._next_id()}&aura.ApexAction.execute=1",
             form=form,
-            headers={"X-SFDC-Page-Scope-Id": "", "Origin": "https://my.synergy.net.au"},
+            headers={"Origin": "https://my.synergy.net.au"},
         )
         if not resp.ok:
-            raise RuntimeError(f"Aura call {ip_method} failed: HTTP {resp.status}")
+            raise RuntimeError(f"Aura call failed: HTTP {resp.status}")
         body = await resp.json()
         return parse_ip_result(body)
 
+    async def _call_ip(self, ip_method: str, ip_input: dict) -> dict:
+        """Invoke a Vlocity Integration Procedure and return its result."""
+        if not self.logged_in:
+            raise NotLoggedIn("Log in via the browser first")
+        return await self._post_action(build_ip_action(ip_method, ip_input, self._next_id()))
+
+    async def _call_apex(self, namespace: str, classname: str, method: str, params: dict) -> dict:
+        """Invoke a direct @AuraEnabled Apex controller method and return its result."""
+        if not self.logged_in:
+            raise NotLoggedIn("Log in via the browser first")
+        return await self._post_action(
+            build_apex_action(namespace, classname, method, params, self._next_id())
+        )
+
     async def get_services(self) -> list[dict]:
-        """Return active services: [{service_id, account_number, tariff, address}]."""
-        # The dashboard fires ServiceAccountInformation with a ServiceId already,
-        # but to enumerate we can call it with an empty id and read ActiveServices.
-        result = await self._call_ip("MyAccount_ServiceAccountInformation", build_service_info_input(""))
-        remote = result.get("RemoteActionGetSingleLinkedService", result)
+        """Return active services: [{service_id, account_number, tariff, address}].
+
+        Uses the portal's own discovery call, CommunityServiceController
+        .getLinkedServices, which resolves the logged-in contact's services
+        server-side (no ServiceId needed).
+        """
+        result = await self._call_apex(
+            "", "CommunityServiceController", "getLinkedServices",
+            {"contactId": None, "accountId": None},
+        )
         services = []
-        for s in remote.get("ActiveServices", []):
+        for s in result.get("ActiveServices", []):
             services.append({
                 "service_id": s.get("Id") or s.get("value"),
                 "account_number": s.get("AccountNumber") or s.get("ContractAccountNumber"),

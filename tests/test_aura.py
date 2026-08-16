@@ -1,7 +1,7 @@
 import json
 from datetime import date
 
-from synergy_analyser.aura import build_chartdata_input, build_apex_action
+from synergy_analyser.aura import build_chartdata_input, build_apex_action, build_ip_action
 
 
 def test_build_chartdata_input_matches_captured_payload():
@@ -42,8 +42,8 @@ def test_build_chartdata_input_defaults_unbilled_to_day():
     assert got["UnbilledEndDate"] == "2026-01-05"
 
 
-def test_build_apex_action_wraps_integration_procedure():
-    action = build_apex_action(
+def test_build_ip_action_wraps_integration_procedure():
+    action = build_ip_action(
         ip_method="MyAccount_ChartData",
         ip_input={"StartDate": "20260802"},
         request_id=7,
@@ -58,3 +58,22 @@ def test_build_apex_action_wraps_integration_procedure():
     assert p["params"]["sClassName"] == "vlocity_cmt.IntegrationProcedureService"
     # input is JSON-encoded, not a nested object
     assert json.loads(p["params"]["input"]) == {"StartDate": "20260802"}
+
+
+def test_build_apex_action_direct_controller():
+    # getLinkedServices is a direct @AuraEnabled controller call (no vlocity wrapper).
+    action = build_apex_action(
+        namespace="",
+        classname="CommunityServiceController",
+        method="getLinkedServices",
+        params={"contactId": None, "accountId": None},
+        request_id=3,
+    )
+    assert action["id"] == "3;a"
+    assert action["descriptor"] == "aura://ApexActionController/ACTION$execute"
+    p = action["params"]
+    assert p["namespace"] == ""
+    assert p["classname"] == "CommunityServiceController"
+    assert p["method"] == "getLinkedServices"
+    assert p["params"] == {"contactId": None, "accountId": None}
+    assert p["cacheable"] is False

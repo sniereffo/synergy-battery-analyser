@@ -54,26 +54,44 @@ def build_service_info_input(service_id: str) -> dict:
     return {"ServiceId": service_id}
 
 
-def build_apex_action(ip_method: str, ip_input: dict, request_id: int) -> dict:
-    """Wrap an Integration Procedure call as an Aura ApexAction execute action."""
+def build_apex_action(
+    namespace: str,
+    classname: str,
+    method: str,
+    params: dict,
+    request_id: int,
+) -> dict:
+    """Build a generic Aura ApexAction execute action for any @AuraEnabled method."""
     return {
         "id": f"{request_id};a",
         "descriptor": "aura://ApexActionController/ACTION$execute",
         "callingDescriptor": "UNKNOWN",
         "params": {
-            "namespace": "vlocity_cmt",
-            "classname": "BusinessProcessDisplayController",
-            "method": "GenericInvoke2NoCont",
-            "params": {
-                "input": json.dumps(ip_input),
-                "options": "{}",
-                "sClassName": "vlocity_cmt.IntegrationProcedureService",
-                "sMethodName": ip_method,
-            },
+            "namespace": namespace,
+            "classname": classname,
+            "method": method,
+            "params": params,
             "cacheable": False,
             "isContinuation": False,
         },
     }
+
+
+def build_ip_action(ip_method: str, ip_input: dict, request_id: int) -> dict:
+    """Build an action that invokes a Vlocity Integration Procedure via
+    BusinessProcessDisplayController.GenericInvoke2NoCont."""
+    return build_apex_action(
+        namespace="vlocity_cmt",
+        classname="BusinessProcessDisplayController",
+        method="GenericInvoke2NoCont",
+        params={
+            "input": json.dumps(ip_input),
+            "options": "{}",
+            "sClassName": "vlocity_cmt.IntegrationProcedureService",
+            "sMethodName": ip_method,
+        },
+        request_id=request_id,
+    )
 
 
 def build_message(actions: list[dict]) -> str:
@@ -87,11 +105,18 @@ def parse_ip_result(aura_response: dict) -> dict:
     The Aura response is `{"actions":[{"returnValue":{"returnValue":"<json str>",
     ...}}]}`; the inner returnValue is a JSON string wrapping `{"IPResult": ...}`.
     """
+    if not aura_response.get("actions"):
+        raise RuntimeError(f"Aura response had no actions: {aura_response!r}")
     action = aura_response["actions"][0]
     if action.get("state") and action["state"] != "SUCCESS":
         raise RuntimeError(f"Aura action failed: {action.get('error')}")
     rv = action["returnValue"]
-    inner = rv.get("returnValue") if isinstance(rv, dict) else rv
+    # IP calls wrap the payload again as returnValue -> a JSON string; direct
+    # controller calls may return the object directly. Handle both.
+    if isinstance(rv, dict) and "returnValue" in rv:
+        inner = rv["returnValue"]
+    else:
+        inner = rv
     if isinstance(inner, str):
         inner = json.loads(inner)
     return inner
