@@ -222,21 +222,43 @@ body::before {
     letter-spacing: -0.01em;
 }
 
-/* === Setup === */
+/* === Setup (single-column stepper) === */
 
 .setup-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    max-width: 760px;
+    margin: 0 auto;
+    counter-reset: step;
+}
+
+/* Auto-number the visible steps so a hidden step (e.g. Connect, when a saved
+   dataset is chosen) doesn't leave a gap in the sequence. */
+.setup-grid > .card:not(.hidden) { counter-increment: step; }
+.setup-grid > .card:not(.hidden) .card-number::before {
+    content: counter(step, decimal-leading-zero);
 }
 
 .setup-grid > .card {
     min-width: 0;
 }
 
-@media (max-width: 768px) {
-    .setup-grid { grid-template-columns: 1fr; }
+/* The connect step is short; let it size to content rather than stretch. */
+.auth-card { position: relative; }
+
+/* Vertical connector line between the numbered steps. */
+.setup-grid > .card::before {
+    content: "";
+    position: absolute;
+    left: 41px;
+    top: -18px;
+    height: 18px;
+    width: 2px;
+    background: var(--border);
 }
+.setup-grid > .card:first-child::before { display: none; }
+.setup-grid > .card { position: relative; }
 
 /* Auth steps */
 

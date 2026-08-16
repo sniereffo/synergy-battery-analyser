@@ -196,8 +196,13 @@ async function fetchDataFiles() {
 
 function onDataSourceChange() {
     const cached = document.getElementById('dataSource').value;
-    const authCard = document.querySelector('.auth-card');
-    authCard.classList.toggle('disabled-card', !!cached);
+    // A saved dataset needs no Synergy connection — hide the connect step.
+    document.getElementById('connectCard').classList.toggle('hidden', !!cached);
+    document.getElementById('dataSourceHint').textContent = cached
+        ? 'Using a saved dataset — no Synergy connection needed.'
+        : 'A live fetch needs you to log in below. Saved datasets load instantly with no connection.';
+    const bt = document.querySelector('#analyseBtn .btn-text');
+    if (bt) bt.textContent = cached ? 'Analyse' : 'Fetch & Analyse';
     document.getElementById('analyseBtn').disabled = !canAnalyse();
 }
 
@@ -427,7 +432,7 @@ async function runAnalysis() {
         toast('Analysis failed: ' + e.message, 'error');
     } finally {
         btn.disabled = !canAnalyse();
-        btnText.textContent = 'Fetch & Analyse';
+        btnText.textContent = document.getElementById('dataSource').value ? 'Analyse' : 'Fetch & Analyse';
         spinner.classList.add('hidden');
     }
 }

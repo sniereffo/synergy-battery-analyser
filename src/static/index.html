@@ -47,10 +47,25 @@
         <!-- Setup Section -->
         <section class="setup-section" id="setupSection">
             <div class="setup-grid">
-                <!-- Auth Card -->
-                <div class="card auth-card">
+                <!-- Data Source Card -->
+                <div class="card datasource-card">
                     <div class="card-header">
-                        <span class="card-number">01</span>
+                        <span class="card-number"></span>
+                        <h2>Data source</h2>
+                    </div>
+                    <div class="field-group">
+                        <label class="field-label">Where should the usage data come from?</label>
+                        <select id="dataSource" class="input" onchange="onDataSourceChange()">
+                            <option value="">Fetch live from Synergy</option>
+                        </select>
+                        <div class="field-hint" id="dataSourceHint">A live fetch needs you to log in below. Saved datasets load instantly with no connection.</div>
+                    </div>
+                </div>
+
+                <!-- Auth Card -->
+                <div class="card auth-card" id="connectCard">
+                    <div class="card-header">
+                        <span class="card-number"></span>
                         <h2>Connect to Synergy</h2>
                     </div>
 
@@ -69,18 +84,11 @@
                 <!-- Config Card -->
                 <div class="card config-card">
                     <div class="card-header">
-                        <span class="card-number">02</span>
+                        <span class="card-number"></span>
                         <h2>Analysis Parameters</h2>
                     </div>
 
                     <div class="config-fields">
-                        <div class="field-group">
-                            <label class="field-label">Data source</label>
-                            <select id="dataSource" class="input" onchange="onDataSourceChange()">
-                                <option value="">Synergy</option>
-                            </select>
-                        </div>
-
                         <div class="field-group">
                             <label class="field-label">Plan <span class="optional">(project a switch)</span></label>
                             <select id="planSelector" class="input" onchange="onPlanChange()"></select>
