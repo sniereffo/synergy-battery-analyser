@@ -34,6 +34,7 @@ let services = [];
 let selectedServiceId = null;
 let loggedIn = false;
 let statusPoll = null;
+let currentCacheFile = null;
 
 // Display labels for the API's tariff-period column names.
 const PERIOD_LABELS = {
@@ -70,8 +71,9 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('endDate').value = fmt(today);
     document.getElementById('startDate').value = fmt(start);
 
-    // Fetch rate schedules and cached data files
+    // Fetch rate schedules, plans and cached data files
     fetchRateSchedules();
+    fetchPlans();
     fetchDataFiles();
 
     // Tab switching
@@ -285,12 +287,61 @@ function populateServices() {
     }
 }
 
-function onServiceChange() {
+async function fetchPlans() {
+    try {
+        const res = await fetch('/api/plans');
+        if (!res.ok) return;
+        const data = await res.json();
+        ['planSelector', 'resultsPlanSelector'].forEach(id => {
+            const sel = document.getElementById(id);
+            if (!sel) return;
+            sel.innerHTML = '';
+            (data.plans || []).forEach(name => {
+                const opt = document.createElement('option');
+                opt.value = name;
+                opt.textContent = name;
+                sel.appendChild(opt);
+            });
+        });
+    } catch (e) {
+        // plans are optional; ignore
+    }
+}
+
+// Switch the projected plan from the results view and re-run in place.
+async function onResultsPlanChange() {
+    const plan = document.getElementById('resultsPlanSelector').value;
+    document.getElementById('planSelector').value = plan;
+    // Load the new plan's rates into the (hidden) rate fields before re-running,
+    // otherwise the previous plan's rates would be sent.
+    await fetchAndRenderRates(plan);
+    runAnalysis();
+}
+
+async function onServiceChange() {
     const sel = document.getElementById('serviceSelector');
     selectedServiceId = sel.value;
     const tariff = sel.selectedOptions[0] ? sel.selectedOptions[0].dataset.tariff : '';
-    fetchAndRenderRates(tariff);
+
+    // Default the plan selector to the plan matching this tariff.
+    try {
+        const res = await fetch('/api/plans?tariff=' + encodeURIComponent(tariff || ''));
+        const data = await res.json();
+        if (data.default) document.getElementById('planSelector').value = data.default;
+    } catch (e) {
+        // ignore; keep whatever plan is selected
+    }
+    const planId = document.getElementById('planSelector').value || tariff;
+    await fetchAndRenderRates(planId);
     document.getElementById('analyseBtn').disabled = !canAnalyse();
+}
+
+async function onPlanChange() {
+    const planId = document.getElementById('planSelector').value;
+    await fetchAndRenderRates(planId);
+    // If we've already analysed, re-run to project the newly selected plan.
+    // This reads from cache (set after the first fetch), so it's instant.
+    if (analysisResult) runAnalysis();
 }
 
 function canAnalyse() {
@@ -324,6 +375,7 @@ async function runAnalysis() {
     const payload = {
         service_id: selectedServiceId,
         tariff_label: tariffLabel || null,
+        plan_id: document.getElementById('planSelector').value || null,
         start_date: document.getElementById('startDate').value,
         end_date: document.getElementById('endDate').value,
         battery_capacity_kwh: parseFloat(document.getElementById('batteryCapacity').value) || 15,
@@ -359,7 +411,17 @@ async function runAnalysis() {
         hideProgressModal();
         showResults();
         toast(cachedFile ? 'Loaded from cache' : 'Analysis complete — data cached', 'success');
-        if (!cachedFile) fetchDataFiles();
+        if (!cachedFile) {
+            // Point subsequent runs (e.g. switching plans) at the cached file so
+            // they're instant instead of re-fetching from Synergy.
+            currentCacheFile = `${payload.start_date}_to_${payload.end_date}.json`;
+            await fetchDataFiles();
+            const ds = document.getElementById('dataSource');
+            if ([...ds.options].some(o => o.value === currentCacheFile)) {
+                ds.value = currentCacheFile;
+                onDataSourceChange();
+            }
+        }
     } catch (e) {
         hideProgressModal();
         toast('Analysis failed: ' + e.message, 'error');
@@ -412,6 +474,10 @@ function updateProgressModal(job) {
 function showResults() {
     document.getElementById('setupSection').classList.add('hidden');
     document.getElementById('resultsSection').classList.remove('hidden');
+    // Keep the results plan switcher in sync with the analysed plan.
+    const planSel = document.getElementById('planSelector');
+    const resSel = document.getElementById('resultsPlanSelector');
+    if (planSel.value) resSel.value = planSel.value;
     renderPlanBanner();
     renderSummary();
     renderChart();

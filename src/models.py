@@ -61,8 +61,16 @@ DEFAULT_SUPPLY_CHARGE_CENTS = 116.0505
 
 
 def display_name(api_period: str) -> str:
-    """Human-friendly label for an API tariff-period column name."""
-    return PERIOD_DISPLAY_NAMES.get(api_period, api_period.replace("_", " ").title())
+    """Human-friendly label for an API tariff-period column name.
+
+    Idempotent: names already in display form (mixed case, e.g. "Off Peak (AM)"
+    from plan projection) are returned unchanged.
+    """
+    if api_period in PERIOD_DISPLAY_NAMES:
+        return PERIOD_DISPLAY_NAMES[api_period]
+    if api_period.isupper() or "_" in api_period:
+        return api_period.replace("_", " ").title()
+    return api_period
 
 
 def plan_for_tariff(

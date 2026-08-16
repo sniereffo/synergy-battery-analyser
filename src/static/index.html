@@ -81,9 +81,15 @@
                             </select>
                         </div>
 
+                        <div class="field-group">
+                            <label class="field-label">Plan <span class="optional">(project a switch)</span></label>
+                            <select id="planSelector" class="input" onchange="onPlanChange()"></select>
+                            <div class="field-hint">Compare your current plan against others — the same usage is re-priced under each plan's time-of-use periods.</div>
+                        </div>
+
                         <div class="field-group plan-selector">
                             <label class="field-label">Tariff rates <span class="optional">(editable)</span></label>
-                            <div class="field-hint">Prefilled from your plan where known — adjust to match your bill.</div>
+                            <div class="field-hint">Sourced live from Synergy where available — adjust to match your bill.</div>
                             <div id="tariffFields" class="tariff-fields"></div>
                         </div>
 
@@ -156,6 +162,12 @@
 
         <!-- Results Section -->
         <section class="results-section hidden" id="resultsSection">
+            <!-- Plan switcher (project a different plan on the same usage) -->
+            <div class="results-plan-switch">
+                <label for="resultsPlanSelector">Project plan</label>
+                <select id="resultsPlanSelector" class="input" onchange="onResultsPlanChange()"></select>
+            </div>
+
             <!-- Plan Info -->
             <div class="plan-banner" id="planBanner"></div>
 

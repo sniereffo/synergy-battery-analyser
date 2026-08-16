@@ -930,3 +930,19 @@ input[type="number"] {
     color: var(--text-muted);
     line-height: 1.5;
 }
+
+/* === Results plan switcher === */
+.results-plan-switch {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 14px;
+}
+.results-plan-switch label {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+.results-plan-switch select {
+    max-width: 280px;
+}

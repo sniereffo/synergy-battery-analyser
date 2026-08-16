@@ -11,8 +11,11 @@ import sys
 
 from .browser_client import SynergyBrowserClient, NotLoggedIn
 from .chartdata import parse_halfhourly_response, apply_rates  # noqa: F401 (parse used via client)
-from .models import RATE_SCHEDULES, plan_for_tariff, display_name
+from .models import RATE_SCHEDULES, EnergyPlan, plan_for_tariff, display_name, DEFAULT_SUPPLY_CHARGE_CENTS
 from .rates import fetch_plan_rates
+from .plans import (
+    PLANS, available_plans, default_plan_for_tariff, assign_periods, rate_map_for_plan,
+)
 from .battery import simulate_battery
 
 
@@ -56,6 +59,7 @@ DATA_DIR = Path("data")
 class AnalyseRequest(BaseModel):
     service_id: str | None = None
     tariff_label: str | None = None
+    plan_id: str | None = None   # which plan to project; defaults to the user's own
     start_date: date
     end_date: date
     battery_capacity_kwh: float
@@ -106,6 +110,12 @@ async def get_rates(tariff: str | None = None):
             "rates": sched["rates"],
         }
     return {"source": "none", "supply_charge_cents": None, "rates": {}}
+
+
+@app.get("/api/plans")
+def list_plans(tariff: str | None = None):
+    """Available plans for projection, plus which one matches this tariff."""
+    return {"plans": available_plans(), "default": default_plan_for_tariff(tariff)}
 
 
 @app.get("/api/data/files")
@@ -238,14 +248,35 @@ async def _do_analysis(req: AnalyseRequest, job: dict) -> dict:
     if not intervals:
         raise HTTPException(400, "No interval data returned for that date range.")
 
-    # 2. Build a data-driven plan for the periods actually present
+    # 2. Choose the plan to project. A known plan re-bins each slot into that
+    #    plan's time-of-use windows (enabling "what if I switched plans?"); an
+    #    unknown tariff falls back to the periods the data already carries.
     job["phase"] = "Pricing and simulating…"
-    periods_present = sorted({i["tariff_name"] for i in intervals})
-    plan = plan_for_tariff(
-        tariff_label, periods_present,
-        supply_charge_cents=req.supply_charge_cents,
-        rate_overrides=req.rate_overrides,
-    )
+    plan_id = req.plan_id or default_plan_for_tariff(tariff_label)
+
+    if plan_id in PLANS:
+        # Rates keyed by API period column: overrides from the UI, else scraped,
+        # else built-in prefill.
+        if req.rate_overrides:
+            rates_by_key = dict(req.rate_overrides)
+        else:
+            scraped = await fetch_plan_rates(plan_id)
+            rates_by_key = (scraped or {}).get("rates") or \
+                RATE_SCHEDULES.get(plan_id.upper(), {}).get("rates", {})
+        assign_periods(intervals, plan_id)
+        rate_map = rate_map_for_plan(plan_id, rates_by_key)
+        supply = req.supply_charge_cents
+        if supply is None:
+            supply = RATE_SCHEDULES.get(plan_id.upper(), {}).get(
+                "supply_charge_cents", DEFAULT_SUPPLY_CHARGE_CENTS)
+        plan = EnergyPlan(id=plan_id, name=plan_id, supply_charge_cents=supply, rates=rate_map)
+    else:
+        periods_present = sorted({i["tariff_name"] for i in intervals})
+        plan = plan_for_tariff(
+            tariff_label, periods_present,
+            supply_charge_cents=req.supply_charge_cents,
+            rate_overrides=req.rate_overrides,
+        )
 
     # 3. Price + simulate
     priced = apply_rates(

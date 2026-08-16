@@ -99,14 +99,44 @@ def test_analyse_from_cached_file(client, tmp_path, monkeypatch):
         job = _poll_job(client)
         assert job["status"] == "done", job.get("error")
         data = job["result"]
-        assert data["plan"]["name"] == "EV2 TARIFF"
+        # EV2 tariff projects onto the EV Add On plan by default.
+        assert data["plan"]["name"] == "Electric Vehicle Add On"
         assert len(data["intervals"]) == 48
         # Consumption total for 2 Aug = sum of the per-period buckets.
         assert round(data["summary"]["total_consumption_kwh"], 2) == round(
             3.209 + 1.596 + 0.986 + 3.195 + 8.311, 2
         )
         assert data["summary"]["total_export_kwh"] == 15.81
-        # Explicit override flows through.
+        # Explicit override flows through (keyed by API column, shown by name).
         assert data["plan"]["rates"]["Peak"] == 53.8446
+    finally:
+        cache.unlink(missing_ok=True)
+
+
+def test_analyse_projects_alternate_plan(client):
+    import json as _json
+    raw = _json.loads((FIXTURES / "chartdata_halfhourly_day.json").read_text())
+    intervals = parse_halfhourly_response(raw)
+    payload = {
+        "tariff_label": "EV2 TARIFF",
+        "intervals": [{**i, "timestamp": i["timestamp"].isoformat()} for i in intervals],
+    }
+    DATA_DIR.mkdir(exist_ok=True)
+    cache = DATA_DIR / "2026-08-02_to_2026-08-02.json"
+    cache.write_text(_json.dumps(payload))
+    try:
+        started = client.post("/api/analyse", json={
+            "start_date": "2026-08-02", "end_date": "2026-08-02",
+            "battery_capacity_kwh": 15.0, "cached_file": cache.name,
+            "plan_id": "Midday Saver",
+            "rate_overrides": {"PEAK": 55.0, "SUPER_OFFPEAK": 8.0, "OFF_PEAK": 24.0},
+        })
+        assert started.status_code == 200
+        job = _poll_job(client)
+        assert job["status"] == "done", job.get("error")
+        data = job["result"]
+        assert data["plan"]["name"] == "Midday Saver"
+        # Midday Saver has only three periods.
+        assert set(data["plan"]["rates"]) <= {"Peak", "Super Off Peak", "Off Peak"}
     finally:
         cache.unlink(missing_ok=True)
