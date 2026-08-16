@@ -13,23 +13,26 @@ from datetime import date
 
 def build_chartdata_input(
     service_id: str,
-    day: date,
+    start: date,
+    end: date | None = None,
     unbilled_start: date | None = None,
     unbilled_end: date | None = None,
 ) -> dict:
-    """Input for `MyAccount_ChartData` requesting one day of half-hourly data.
+    """Input for `MyAccount_ChartData` requesting half-hourly data for a span.
 
-    IntervalType=DAILY + Interval="X" + ChartType=INTERVAL_DATA yields the 48
-    half-hourly rows. Unbilled dates come from `MyAccount_HeaderDataAPI`; they
-    do not gate historical data, so they default to the requested day.
+    IntervalType=DAILY + Interval="X" + ChartType=INTERVAL_DATA returns 48
+    half-hourly rows *per day* across the whole StartDate..EndDate range in one
+    call (verified: a month span returns all available days at once), so a range
+    needs only a few chunked requests rather than one per day. `end` defaults to
+    `start` for a single day. Unbilled dates do not gate historical data, so
+    they default to the requested span.
     """
-    unbilled_start = unbilled_start or day
-    unbilled_end = unbilled_end or day
-    ymd = day.strftime("%Y%m%d")
-    iso = day.strftime("%Y-%m-%d")
+    end = end or start
+    unbilled_start = unbilled_start or start
+    unbilled_end = unbilled_end or end
     return {
-        "StartDate": ymd,
-        "EndDate": ymd,
+        "StartDate": start.strftime("%Y%m%d"),
+        "EndDate": end.strftime("%Y%m%d"),
         "ServiceId": service_id,
         "IntervalType": "DAILY",
         "ChartType": "INTERVAL_DATA",
@@ -38,8 +41,8 @@ def build_chartdata_input(
         "Monthly": "",
         "DisplayOptionValue": "Daily",
         "Device": [],
-        "PeriodStartDate": iso,
-        "PeriodEndDate": iso,
+        "PeriodStartDate": start.strftime("%Y-%m-%d"),
+        "PeriodEndDate": end.strftime("%Y-%m-%d"),
         "PreviousMeters": [],
         "UnbilledStartDate": unbilled_start.strftime("%Y-%m-%d"),
         "UnbilledEndDate": unbilled_end.strftime("%Y-%m-%d"),

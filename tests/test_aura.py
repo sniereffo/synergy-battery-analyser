@@ -8,7 +8,7 @@ def test_build_chartdata_input_matches_captured_payload():
     # Ground truth: the exact input the portal sent for 2026-08-02 (half-hourly).
     got = build_chartdata_input(
         service_id="001TESTSERVICE0001",
-        day=date(2026, 8, 2),
+        start=date(2026, 8, 2),
         unbilled_start=date(2026, 8, 6),
         unbilled_end=date(2026, 8, 14),
     )
@@ -36,10 +36,22 @@ def test_build_chartdata_input_matches_captured_payload():
 
 
 def test_build_chartdata_input_defaults_unbilled_to_day():
-    got = build_chartdata_input(service_id="001X", day=date(2026, 1, 5))
+    got = build_chartdata_input(service_id="001X", start=date(2026, 1, 5))
     assert got["StartDate"] == "20260105"
+    assert got["EndDate"] == "20260105"
     assert got["UnbilledStartDate"] == "2026-01-05"
     assert got["UnbilledEndDate"] == "2026-01-05"
+
+
+def test_build_chartdata_input_span():
+    # A multi-day span returns half-hourly for the whole range in one request.
+    got = build_chartdata_input(service_id="001X", start=date(2026, 1, 1), end=date(2026, 1, 31))
+    assert got["StartDate"] == "20260101"
+    assert got["EndDate"] == "20260131"
+    assert got["PeriodStartDate"] == "2026-01-01"
+    assert got["PeriodEndDate"] == "2026-01-31"
+    assert got["IntervalType"] == "DAILY"
+    assert got["Interval"] == "X"
 
 
 def test_build_ip_action_wraps_integration_procedure():

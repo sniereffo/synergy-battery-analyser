@@ -168,43 +168,61 @@ class SynergyBrowserClient:
         return services
 
     async def get_day(self, service_id: str, day: date) -> list[dict]:
-        """Fetch and parse one day of half-hourly intervals."""
+        """Fetch and parse a single day of half-hourly intervals."""
         result = await self._call_ip(
             "MyAccount_ChartData", build_chartdata_input(service_id, day)
         )
         return parse_halfhourly_response(result)
 
-    async def get_range(
-        self, service_id: str, start: date, end: date, progress=None, concurrency: int = 5
-    ) -> list[dict]:
-        """Fetch a contiguous date range, one day per call.
+    async def get_span(self, service_id: str, start: date, end: date) -> list[dict]:
+        """Fetch and parse a contiguous span in a single request.
 
-        The portal only serves one day of half-hourly data per request, so a
-        range means many calls. They run with bounded concurrency to cut the
-        wall-clock time while staying polite. `progress`, if given, is called
-        with (done, total, day) as each day completes. Results are returned in
-        chronological order regardless of completion order.
+        MyAccount_ChartData returns half-hourly rows for every available day in
+        StartDate..EndDate at once, so a whole month comes back in one call.
         """
-        days = [start + timedelta(days=n) for n in range((end - start).days + 1)]
-        total = len(days)
+        result = await self._call_ip(
+            "MyAccount_ChartData", build_chartdata_input(service_id, start, end)
+        )
+        return parse_halfhourly_response(result)
+
+    async def get_range(
+        self, service_id: str, start: date, end: date, progress=None,
+        chunk_days: int = 31, concurrency: int = 4,
+    ) -> list[dict]:
+        """Fetch a date range at half-hourly resolution in chunked requests.
+
+        The portal serves the whole span per request, but very long spans are
+        split into ~monthly chunks to keep each response modest, give useful
+        progress, and run a few concurrently. `progress`, if given, is called
+        with (days_done, total_days, latest_day). Results are chronological.
+        """
+        chunks: list[tuple[date, date]] = []
+        cur = start
+        while cur <= end:
+            chunk_end = min(cur + timedelta(days=chunk_days - 1), end)
+            chunks.append((cur, chunk_end))
+            cur = chunk_end + timedelta(days=1)
+
+        total_days = (end - start).days + 1
         sem = asyncio.Semaphore(max(1, concurrency))
         by_index: dict[int, list[dict]] = {}
-        done = 0
+        done_days = 0
 
-        async def fetch(idx: int, day: date):
-            nonlocal done
+        async def fetch(idx: int, cstart: date, cend: date):
+            nonlocal done_days
             async with sem:
-                result = await self.get_day(service_id, day)
-            by_index[idx] = result
-            done += 1
+                intervals = await self.get_span(service_id, cstart, cend)
+            by_index[idx] = intervals
+            done_days += (cend - cstart).days + 1
             if progress:
-                progress(done, total, day)
+                progress(min(done_days, total_days), total_days, cend)
 
-        await asyncio.gather(*(fetch(i, d) for i, d in enumerate(days)))
+        await asyncio.gather(*(fetch(i, s, e) for i, (s, e) in enumerate(chunks)))
 
         intervals: list[dict] = []
-        for i in range(total):
+        for i in range(len(chunks)):
             intervals.extend(by_index.get(i, []))
+        intervals.sort(key=lambda iv: iv["timestamp"])
         return intervals
 
     async def close(self):
