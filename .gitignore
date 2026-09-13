@@ -19,3 +19,7 @@ CLAUDE.md
 api_response.json
 data/
 discover_api.py
+
+# Local HAR captures used for reverse-engineering (contain session tokens)
+captures/
+*.har
