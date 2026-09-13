@@ -19,3 +19,5 @@ CLAUDE.md
 api_response.json
 data/
 discover_api.py
+captures/
+*.har
