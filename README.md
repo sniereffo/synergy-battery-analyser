@@ -1,5 +1,7 @@
 # Synergy Battery Feasibility Analyser
 
+> ⚠️ **This version does not currently work.** In April 2026 Synergy replaced its self-service portal with the new My Synergy site, and the login and data endpoints this tool relies on no longer exist. An update that works with the new site is in progress on the [`synergy-portal-rebuild`](https://github.com/sniereffo/synergy-battery-analyser/tree/synergy-portal-rebuild) branch and will be merged once it has been tested. Follow [issue #1](https://github.com/sniereffo/synergy-battery-analyser/issues/1) for progress.
+
 Analyse your [Synergy](https://www.synergy.net.au/) (Western Australia) electricity usage data to determine whether a home battery is financially worthwhile.
 
 > This project was built with AI assistance — thanks Claude! I had a personal need to review my energy usage and determine whether a home battery made financial sense. The speed at which I could go from idea to a working tool that analyses, visualises, and informs that decision was fantastic. Maybe someone else will find it useful too!
