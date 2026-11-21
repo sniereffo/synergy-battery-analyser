@@ -1,9 +1,10 @@
 """Probe whether Synergy will return half-hourly data for a multi-day request.
 
-We currently fetch half-hourly usage one day per request. This script tests
-whether a WEEK or MONTH request (with the half-hourly `Interval=X` flag) returns
-many days of half-hourly rows in a single call — which would let us fetch far
-fewer times.
+This is the probe that established span fetching: the app originally fetched
+half-hourly usage one day per request, and this script tested whether a WEEK or
+MONTH request (with the half-hourly `Interval=X` flag) returns
+many days of half-hourly rows in a single call. It does (IntervalType=DAILY with
+Interval=X), so the app now fetches in roughly monthly spans.
 
 Run:  uv run python scripts/probe_granularity.py
 Log in when the browser opens; the script then issues several MyAccount_ChartData

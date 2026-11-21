@@ -1,3 +1,7 @@
+# LIMITATION (packaging parked): this spec does NOT bundle Playwright's driver
+# or Chromium, which the new-portal login needs. A binary built from it cannot
+# log in. The rebuild currently runs from source only (uv run uvicorn ...).
+# Do not ship binaries from this spec until that is solved.
 # -*- mode: python ; coding: utf-8 -*-
 
 

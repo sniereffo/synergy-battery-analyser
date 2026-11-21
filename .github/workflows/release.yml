@@ -1,9 +1,12 @@
+# LIMITATION (packaging parked): the PyInstaller spec does not bundle
+# Playwright's driver or Chromium, so binaries built here cannot log in to the
+# new Synergy portal. To avoid publishing broken releases, the tag trigger has
+# been disabled and this workflow runs only via manual workflow_dispatch.
+# Restore the `push: tags` trigger once packaging is fixed.
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
 
 jobs:
   test:
