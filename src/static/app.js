@@ -951,7 +951,14 @@ function renderSummary() {
 
     const cards = [
         { icon: 'plug-zap', label: 'Grid Import', value: `${s.total_consumption_kwh.toLocaleString()} kWh`, sub: `${s.num_days} days`, cls: 'neutral' },
-        { icon: 'sun-medium', label: 'Grid Export', value: `${s.total_export_kwh.toLocaleString()} kWh`, sub: `earned ${fmtDollars(s.export_credits_dollars, { cents: true })} feed-in`, cls: 'positive' },
+        { icon: 'sun-medium', label: 'Grid Export', value: `${s.total_export_kwh.toLocaleString()} kWh`,
+          title: typeof s.export_with_battery_kwh === 'number'
+              ? `Feed-in credits earned on exported solar. With a battery, ${s.export_with_battery_kwh.toLocaleString()} kWh would still be exported; the rest is stored, and its lost feed-in is already deducted from the saving.`
+              : 'Feed-in credits earned on exported solar',
+          sub: typeof s.export_credits_with_battery_dollars === 'number'
+              ? [`without battery: ${fmtDollars(s.export_credits_dollars, { cents: true })}`,
+                 `with battery: ${fmtDollars(s.export_credits_with_battery_dollars, { cents: true })}`]
+              : `earned ${fmtDollars(s.export_credits_dollars, { cents: true })} feed-in`, cls: 'positive' },
         { icon: 'receipt', label: 'Net Cost', title: 'Net cost without a battery (after feed-in credits)', value: fmtDollars(s.total_cost_without_battery_dollars, { cents: true }), sub: ['without battery', 'after feed-in credits'], cls: 'negative' },
         { icon: 'receipt', label: 'Net Cost', title: 'Net cost with a battery (after feed-in credits)', value: fmtDollars(s.total_cost_with_battery_dollars, { cents: true }), sub: ['with battery', 'after feed-in credits'], cls: 'positive' },
         { icon: 'piggy-bank', label: 'Annual Savings', title: p.isProjection ? 'Projected to 12 months from a shorter range' : null, value: annualValue, sub: annualSub, cls: p.annual > 0 ? 'positive' : 'neutral' },

@@ -613,6 +613,11 @@ async def _do_analysis(req: AnalyseRequest, job: dict) -> dict:
     total_topup_cost = sum(e["grid_topup_cost_cents"] for e in battery_result)
     net_savings = total_discharge_savings - total_lost_feed_in - total_topup_cost
     total_cost_with_battery = total_cost_without_battery - net_savings
+    # With a battery, solar it stores is no longer exported, so its feed-in
+    # credit is lost (already deducted in net_savings above).
+    total_solar_charge = sum(e["charge_kwh"] for e in battery_result)
+    export_with_battery = total_export - total_solar_charge
+    export_credits_with_battery = total_export_credits - total_lost_feed_in
 
     # Savings are projected to 12 months from however many days were analysed.
     # Short ranges are a rough estimate: solar and usage vary by season.
@@ -647,6 +652,13 @@ async def _do_analysis(req: AnalyseRequest, job: dict) -> dict:
             "total_cost_with_battery_dollars": round(total_cost_with_battery / 100, 2),
             "period_savings_dollars": round(net_savings / 100, 2),
             "export_credits_dollars": round(total_export_credits / 100, 2),
+            # Feed-in with a battery, and how the saving is made up:
+            # period_savings = import_avoided - feed_in_lost - grid_topup_cost
+            "export_with_battery_kwh": round(export_with_battery, 2),
+            "export_credits_with_battery_dollars": round(export_credits_with_battery / 100, 2),
+            "import_avoided_dollars": round(total_discharge_savings / 100, 2),
+            "feed_in_lost_dollars": round(total_lost_feed_in / 100, 2),
+            "grid_topup_cost_dollars": round(total_topup_cost / 100, 2),
             "annualised_savings_dollars": (
                 round(annual_savings, 2) if annual_savings is not None else None
             ),

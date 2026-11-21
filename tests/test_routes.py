@@ -926,3 +926,35 @@ def test_unknown_column_usage_on_unknown_tariff_is_reported_unpriced(client, dat
     data = _analyse(client, cached_file=name)
     assert f"No rate for 'Unknown' — {kwh:.1f} kWh priced at 0c" in data["warnings"]
     assert not [w for w in data["warnings"] if "unrecognised tariff column" in w]
+
+
+# --- savings arithmetic: the cards must add up ---
+
+@pytest.mark.parametrize("grid_topup", [False, True])
+def test_savings_and_feed_in_figures_are_consistent(client, data_dir, grid_topup):
+    # The fixture day has a big solar surplus, so the battery stores solar that
+    # would otherwise earn feed-in; that lost feed-in must reduce the saving.
+    name = _write_cache(data_dir, "consistency.json", _days(date(2025, 7, 1), 365))
+    s = _analyse(client, cached_file=name, battery_capacity_kwh=15.0,
+                 battery_cost_dollars=9000.0, grid_topup=grid_topup)["summary"]
+    cents = 0.011  # each figure is rounded to the cent independently
+
+    # The battery really does give up some feed-in.
+    assert s["feed_in_lost_dollars"] > 0
+    assert s["export_with_battery_kwh"] < s["total_export_kwh"]
+
+    # Saving = import avoided - feed-in lost - grid top-up cost.
+    assert s["period_savings_dollars"] == pytest.approx(
+        s["import_avoided_dollars"] - s["feed_in_lost_dollars"] - s["grid_topup_cost_dollars"],
+        abs=cents * 3)
+    # Saving = Net Cost (without) - Net Cost (with): the two cards and the savings agree.
+    assert s["period_savings_dollars"] == pytest.approx(
+        s["total_cost_without_battery_dollars"] - s["total_cost_with_battery_dollars"],
+        abs=cents * 3)
+    # Feed-in with a battery = feed-in without - feed-in lost.
+    assert s["export_credits_with_battery_dollars"] == pytest.approx(
+        s["export_credits_dollars"] - s["feed_in_lost_dollars"], abs=cents * 3)
+    # A full year is not projected: the Annual Savings card shows the saving itself.
+    assert s["is_projection"] is False
+    assert s["annualised_savings_dollars"] == pytest.approx(s["period_savings_dollars"], abs=cents)
+    assert s["payback_years"] == pytest.approx(9000.0 / s["annualised_savings_dollars"], abs=0.05)
