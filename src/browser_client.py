@@ -107,7 +107,9 @@ class SynergyBrowserClient:
         for name in order:
             try:
                 if name == "chromium":
-                    browser = await self._pw.chromium.launch(headless=self._headless)
+                    # channel="chromium": always the full browser (also when
+                    # hidden), never the separate headless shell we don't download.
+                    browser = await self._pw.chromium.launch(channel="chromium", headless=self._headless)
                 else:
                     browser = await self._pw.chromium.launch(channel=name, headless=self._headless)
                 self.browser_name = name
@@ -117,7 +119,7 @@ class SynergyBrowserClient:
         if "chromium" not in order:
             raise RuntimeError("Could not start the login browser (" + "; ".join(errors) + ")")
         await asyncio.to_thread(install_playwright_chromium)
-        browser = await self._pw.chromium.launch(headless=self._headless)
+        browser = await self._pw.chromium.launch(channel="chromium", headless=self._headless)
         self.browser_name = "chromium"
         return browser
 

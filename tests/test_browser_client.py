@@ -289,7 +289,7 @@ async def test_start_failure_tears_down_and_reraises(monkeypatch):
     class FakePW:
         class chromium:
             @staticmethod
-            async def launch(headless):
+            async def launch(headless, channel=None):
                 raise RuntimeError("Executable doesn't exist")
 
         async def stop(self):
@@ -300,6 +300,11 @@ async def test_start_failure_tears_down_and_reraises(monkeypatch):
             return FakePW()
 
     monkeypatch.setattr(browser_client, "async_playwright", lambda: FakeManager())
+    monkeypatch.delenv("SYNERGY_BROWSER", raising=False)
+
+    def offline_install():  # no Chrome/Edge, and the one-off download fails
+        raise RuntimeError("Executable doesn't exist (download failed: offline)")
+    monkeypatch.setattr(browser_client, "install_playwright_chromium", offline_install)
     client = SynergyBrowserClient()
     with pytest.raises(RuntimeError, match="Executable doesn't exist"):
         await client.start()
