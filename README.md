@@ -1,83 +1,166 @@
 # Synergy Battery Feasibility Analyser
 
-Analyse your [Synergy](https://www.synergy.net.au/) (Western Australia) electricity usage data to determine whether a home battery is financially worthwhile.
+Work out whether a home battery is worth it, using your own half-hourly electricity data from [Synergy](https://www.synergy.net.au/) (Western Australia).
+
+The app reads a year of your real usage and solar export, simulates a battery on it half-hour by half-hour, and shows what it would save, how long it would take to pay for itself, and which size suits your household.
 
 > This project was built with AI assistance — thanks Claude! I had a personal need to review my energy usage and determine whether a home battery made financial sense. The speed at which I could go from idea to a working tool that analyses, visualises, and informs that decision was fantastic. Maybe someone else will find it useful too!
 
 <p align="center">
-  <img src="example.png" alt="Screenshot">
+  <img src="example.png" alt="Screenshot of the results: summary cards, the battery comparison table and the battery size chart">
 </p>
 
-## Features
+## What it does
 
-- **Synergy portal integration** — Logs in to the current My Synergy portal (`my.synergy.net.au`) in a real browser window (you complete the MFA yourself), then reads your half-hourly interval data automatically
-- **Tariff-aware analysis** — Reads the tariff period of each half-hourly slot directly from Synergy's data (peak, off-peak, off-peak AM, overnight, super off-peak), and prefills known plan rates which you can edit to match your bill
-- **Battery simulation** — Models half-hourly charge/discharge cycles: charges from solar export and discharges to offset grid import, but only when grid power is worth more than the stored energy (it won't spend stored solar on cheap Super Off Peak power). Optional grid top-up during the cheapest tariff period
-- **Compare battery sizes** — Enter up to three batteries (capacity and installed price) to compare side by side: grid import and export, feed-in, net cost, annual saving, payback and 10-year return
-- **Recommended size** — Every analysis also tests sizes up to 30 kWh and recommends the smallest one that captures 90% of the achievable saving, where extra capacity stops paying its way
-- **Feed-in credit accounting** — Calculates DEBS feed-in credits (configurable peak/off-peak rates) and tracks lost credits when the battery captures energy that would otherwise be exported
-- **Offline analysis** — Saves fetched interval data locally so you can re-run analysis with different parameters without logging in again
-- **Light/dark theme** — Toggleable via header button, honours system preference with flash-free page load
-- **CSV export** — Download the full interval dataset for use in spreadsheets or other tools
+- **Reads your real data** from the My Synergy portal: every half-hour of grid import and solar export.
+- **Compares up to three batteries** side by side (capacity and installed price): grid import and export, feed-in credits, usage and supply charges, net cost, annual saving, payback and 10-year return.
+- **Recommends a size** by testing batteries from 0 to 30 kWh on your usage and finding where extra capacity stops paying its way.
+- **Projects other plans**: see what your usage would cost on EV Add On, Midday Saver or Home Plan A1.
+- **Uses current prices**, read from Synergy's published plan pages (editable).
+- **Counts feed-in properly**: solar the battery stores is no longer exported, so its feed-in credit is lost, and that is taken off the saving.
+- **Works offline** once your data is fetched, and remembers your settings between sessions.
 
-## How it works
+## Getting started
 
-1. Click **Open Synergy login** — a browser window opens on the My Synergy portal. Log in as normal, including your one-time MFA code. Your password is entered only on Synergy's own site; this app never sees it.
-2. Pick your service, choose a date range, enter up to three batteries to compare (capacity and price), set feed-in rates, and confirm the (prefilled) tariff rates.
-3. The tool fetches your half-hourly consumption and solar-export data from the portal in roughly monthly spans (one request per span), and saves it locally for future use.
-4. Each interval is priced using its Synergy-supplied tariff period (or a plan you choose to project) and a battery charge/discharge simulation is run.
-5. Results are presented as summary cards and six interactive charts.
+There are two ways to run it. Both open the app in your web browser; nothing is installed into your browser.
 
-> **Note on the browser step:** Synergy's portal is protected by multi-factor authentication and reCAPTCHA, which are designed to require a human. The app therefore drives a real browser for login rather than logging in headlessly — you'll complete the MFA prompt yourself each session. Fetching a long date range takes a little while, but far less than it used to: `MyAccount_ChartData` with `IntervalType=DAILY` plus `Interval=X` returns half-hourly rows for a whole date span, so the app requests about a month at a time.
+### Option 1: download the app (easiest)
 
-## Plans, rates and battery settings
+1. Download the file for your computer from the [Releases](https://github.com/sniereffo/synergy-battery-analyser/releases) page:
+   - Windows: `synergy-battery-analyser-windows.exe`
+   - Mac (Apple Silicon): `synergy-battery-analyser-macos`
+   - Linux: `synergy-battery-analyser-linux`
+2. Run it. A small console window opens and the app opens in your browser.
+3. To stop the app, close the console window (or press Ctrl+C in it).
 
-- **Plan switching ("project a plan")** — By default the plan matching your data's own tariff is used. You can instead pick another plan to see what your actual usage would cost under it; the same half-hourly usage is re-priced using that plan's periods.
-- **Live rate sourcing** — Plan rates are read from the plan pages on synergy.net.au. They are shown in editable fields so you can correct them to match your bill. If the pages cannot be read, the app falls back to built-in rates effective 1 July 2026.
-- **Round-trip efficiency** — The battery simulation applies a round-trip efficiency (default 90%) on discharge: the energy delivered to the house is the energy drawn from the battery times the efficiency. Adjust it to suit the battery you are considering.
-- **Saved datasets** — Fetched intervals are saved to `data/` (gitignored) so you can re-run analysis offline, optionally filtered to a date range. Your Synergy password and session are never written to disk.
+The first time you open it, your computer may warn you because the app isn't signed by a paid developer certificate:
 
-## Charts
+- **Windows:** on the "Windows protected your PC" screen, click **More info**, then **Run anyway**.
+- **Mac:** after the first attempt is blocked, open **System Settings → Privacy & Security** and click **Open Anyway**. You may also need to make it executable first: `chmod +x synergy-battery-analyser-macos` in Terminal.
+- **Linux:** make it executable (`chmod +x synergy-battery-analyser-linux`), then run it.
 
-- **Daily Usage** — Stacked bars per day, split by tariff period (peak, off-peak, super off-peak, overnight), with a solar-export line overlaid. Includes a zoom slider for navigating the full date range.
-- **Cost Breakdown** — Monthly stacked bars of cost by tariff period plus the supply charge (and feed-in credits as a negative bar), with a dashed net-total line, showing the financial impact of each rate tier over time.
-- **Import vs Export** — Daily grid import and grid export as line charts across the full analysis period, useful for spotting seasonal generation and consumption patterns.
-- **Battery Size** — Annual saving against battery capacity from 0 to 30 kWh, with your batteries and the recommended size marked. Shows where extra capacity stops adding much.
-- **Battery Simulation** — Per-day view with a date picker to jump to any day. Shows the battery level line (left axis) alongside half-hourly consumption, solar export, battery discharge and grid top-up bars (right axis).
-- **ROI** — Cumulative projected savings (years out) against the battery cost line, based on annual savings. If a battery cost is provided, shows where the lines cross, i.e. the estimated payback period.
-- **Heatmap** — Calendar heatmap of daily consumption totals, highlighting usage patterns across days, weeks and seasons.
+### Option 2: run it with uv
 
-## Date range, payback and projections
+If you're comfortable with a terminal, [uv](https://docs.astral.sh/uv/getting-started/installation/) can run the latest version directly from GitHub, on Windows, Mac or Linux. Install uv once, then:
 
-- **Default range** — The date range defaults to the last 12 months (ending yesterday). A full year is the most reliable basis for a payback estimate because it covers every season.
-- **Annual savings and payback** — Savings are annualised to a 12-month figure (`net savings / days analysed x 365`), and payback is the battery cost divided by that annual figure.
-- **Projections for short ranges** — If the selected range is under 12 months, annual savings and payback are linear extrapolations and are labelled "projected" in the summary and ROI chart. When the range is under about 11 months (330 days), a warning is also shown: solar generation and household usage vary a lot by season, so a projection from a short window (for example, only winter) can be well off. Treat it as an estimate, not a measured result, and analyse a full 12 months for a reliable figure.
+```bash
+uvx --from git+https://github.com/sniereffo/synergy-battery-analyser synergy-analyser
+```
+
+uv downloads everything it needs, including the right version of Python. To keep it installed as a normal command instead:
+
+```bash
+uv tool install git+https://github.com/sniereffo/synergy-battery-analyser
+synergy-analyser                 # run it
+uv tool upgrade synergy-analyser # update later
+```
+
+Options: `--port 8080` to use a different port (by default it uses 8000, or the next free one), `--data-dir PATH` to choose where data is saved, and `--no-browser` to not open the browser automatically.
+
+### About the Synergy login window
+
+Synergy's login uses multi-factor authentication and a "are you human" check, so it can't be automated. When you click **Open Synergy login**, the app opens a separate browser window on Synergy's site. You log in as normal, including your one-time code, and the window closes by itself once you're in.
+
+That login window is controlled by the app (so it can read your usage after you log in), which needs **Google Chrome** or **Microsoft Edge**. If you have either installed, it's used, with a fresh, empty profile (never your own profile, bookmarks or cookies). If you only use Firefox or Safari, the app downloads its own copy of Chromium the first time you log in. That happens once, takes a minute or two, and uses about 400 MB of disk space. The app itself still opens in your normal browser.
+
+## Using it
+
+1. **Data source.** Choose "Fetch live from Synergy", or a dataset you saved earlier (no login needed).
+2. **Connect to Synergy** (live fetch only). Click **Open Synergy login**, log in, then pick your account.
+3. **Analysis parameters.**
+   - **Plan:** "My current plan" uses your actual tariff. Pick another plan to see what your usage would cost on it.
+   - **Tariff rates:** filled in from Synergy's website. Check them against your bill.
+   - **Date range:** defaults to the last 12 months. Use a full year if you can; see [Short date ranges](#short-date-ranges).
+   - **Batteries to compare:** up to three, each with a capacity (kWh) and, optionally, the installed price.
+   - **Inverter, efficiency, feed-in rates and grid top-up:** the defaults suit most systems.
+4. Click **Fetch & Analyse**. A full year takes about a minute to fetch the first time. It's then saved, so re-running with different settings (or after reopening the app) is instant.
+
+Your settings are remembered in your browser. **Reset to defaults** under the Analyse button clears them.
+
+## Reading the results
+
+- **Summary cards** describe the battery selected in **Show battery**: grid import and export, net cost without and with the battery, annual saving and payback.
+- **Battery comparison** puts no battery and each of your batteries side by side. The bill is broken into **usage charges**, the **supply charge** and **feed-in credits**, adding up to **net cost**. The supply charge is a fixed daily fee: it's the same in every column because a battery can't reduce it.
+- **Recommendation:** the smallest size that captures 90% of the saving available up to 30 kWh, plus which of your batteries pays back fastest and which gives the best 10-year return.
+- **Charts:**
+  - **Daily Usage:** grid import per day, split by tariff period, with solar export.
+  - **Cost Breakdown:** monthly cost by tariff period plus the supply charge and feed-in credits.
+  - **Import vs Export:** daily grid import and export across the period.
+  - **Battery Simulation:** any single day, half-hour by half-hour: battery level, usage, solar, discharge and grid top-up.
+  - **Battery Size:** annual saving against battery capacity, with your batteries and the recommended size marked.
+  - **ROI:** cumulative saving against the battery's price, showing where it pays back.
+  - **Heatmap:** a calendar of daily usage.
+- **Export CSV** downloads every half-hour of the analysis.
+
+### Short date ranges
+
+Savings and payback are always shown per year. With 12 months of data (360+ days) they're measured. With less, they're scaled up to a year in a straight line and labelled **projected**, and under 330 days a warning explains why: solar and household usage change a lot with the seasons, so a few winter months (or summer months) can be well off. Use a full year for a reliable figure.
+
+## How the figures are calculated
+
+The app has a **How these figures are calculated** section at the bottom of every page. In short:
+
+- **Costs** use your plan's rates for every half-hour you bought from the grid, plus the daily supply charge, minus feed-in credits (DEBS: 10c/kWh 3pm–9pm, 2c/kWh otherwise, editable).
+- **The battery** charges from excess solar (giving up that solar's feed-in credit) and discharges to cover what you'd otherwise buy, but only when grid power is worth more than the stored energy. It won't spend stored solar on cheap Super Off Peak power. Round-trip losses (90% by default) and the inverter's power limit apply.
+- **Grid top-up** (optional) buys from the grid only in the cheapest period, after the solar expected later that day, and never on flat-rate plans.
+- **Saving** = grid import avoided − feed-in lost − top-up cost. **Payback** = price ÷ annual saving. **10-year return** = annual saving × 10 − price.
+- **Not included:** financing, price or tariff rises, battery degradation, replacement, maintenance or rebates (enter the price after any rebate), and any changes in how you'd use power with a battery.
+
+These are estimates for personal planning based on your past usage. They're not financial advice or a quote. This tool isn't affiliated with Synergy. Get quotes and independent advice before buying.
+
+## Privacy and your data
+
+- **Your password** is typed into Synergy's own website, in the login window. The app never sees or stores it.
+- **Your session** is held in memory only and ends when you close the app.
+- **Your usage data** is saved only on your computer, in:
+  - Windows: `%LOCALAPPDATA%\synergy-analyser\data`
+  - Mac: `~/Library/Application Support/synergy-analyser/data`
+  - Linux: `~/.local/share/synergy-analyser/data`
+- **Network use:** the app only talks to Synergy (your data, and the public plan pages for prices). It runs on your computer at `http://127.0.0.1` and isn't reachable from other devices.
+- **Your settings** are kept in your browser's local storage for this app.
+
+## Troubleshooting
+
+- **The login window doesn't open.** Check your internet connection (the first login may need to download a browser). Click **Open Synergy login** again. If it still fails, the message on screen says why.
+- **"Your Synergy session has expired".** Log in again; your data and settings are kept.
+- **A saved dataset is greyed out and marked "Old format".** It was saved by the version before Synergy changed its website in April 2026 and can't be read. Fetch the data again.
+- **Fewer days than you asked for.** Synergy only keeps a limited amount of history, and nothing before you moved in. The results cover the days returned, and a note lists any missing dates.
+- **Port already in use.** The app picks the next free port automatically and shows the address in its window.
 
 ## Development
 
-Requires Python 3.14+ and [uv](https://docs.astral.sh/uv/).
-
-> **Run from source only:** the rebuild for the new portal currently runs from source (uv plus `uv run playwright install chromium`). Standalone binaries are not yet supported for the new portal: the PyInstaller spec and release workflow do not bundle Playwright's driver or Chromium, so a binary could not log in. The release workflow is manual-only for now.
+Requires [uv](https://docs.astral.sh/uv/). The package is `synergy_analyser`; its source lives directly in `src/`.
 
 ```bash
-# Install the browser used for the login/fetch step (one-off)
-uv run playwright install chromium
+git clone https://github.com/sniereffo/synergy-battery-analyser.git
+cd synergy-battery-analyser
+uv sync
 
-# Run the dev server
-uv run uvicorn synergy_analyser.main:app --host 127.0.0.1 --port 8000
+# Run the app (saved data goes to the per-user folder; add --data-dir ./data to keep it in the repo)
+uv run synergy-analyser
 
-# Run tests
-uv run pytest -v
+# Or run the server with auto-reload while editing (saved data goes to ./data)
+uv run uvicorn synergy_analyser.main:app --host 127.0.0.1 --port 8000 --reload --reload-dir src
 
-# Live end-to-end check (opens a browser; you log in) — fetches one day
+# Tests (offline) and checks
+uv run pytest -q
+uvx ruff check src --select F,E9
+node --check src/static/app.js
+
+# Live checks against Synergy (a login window opens; you log in)
 uv run python scripts/smoke_fetch.py 2026-08-02
 ```
 
-## Data notes
+Environment variables: `SYNERGY_DATA_DIR` (saved data folder), `SYNERGY_BROWSER=chrome|msedge|chromium` (force the login browser), `SYNERGY_LOGIN_HEADLESS=1` (hide the login window; for automated checks only).
 
-- Usage comes from the portal's `MyAccount_ChartData` procedure. Each half-hourly slot arrives already labelled with its tariff period; consumption and solar export are in **kWh** directly (no kW→kWh conversion needed).
-- `VAL_SOLAR` is grid **export** (what the meter sends back), which is what feed-in credits are earned on.
-- Feed-in rates default to DEBS: 10 c/kWh peak (3pm–9pm), 2 c/kWh off-peak.
+### Building the binaries
+
+```bash
+uv sync --group dev --no-editable --reinstall-package synergy-analyser
+uv run --no-sync pyinstaller --noconfirm synergy-battery-analyser.spec   # -> dist/
+```
+
+The binary starts from `packaging/launcher.py` and bundles Playwright's driver, but no browser (see [About the Synergy login window](#about-the-synergy-login-window)). The [Release workflow](.github/workflows/release.yml) builds and smoke-tests Linux, Windows and macOS binaries. Run it manually for test builds, or push a `v*` tag to create a draft release.
 
 ## License
 
