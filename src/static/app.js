@@ -1230,7 +1230,7 @@ function renderComparison() {
             ? (next.annual_savings_dollars - curve[at].annual_savings_dollars) / (next.capacity_kwh - curve[at].capacity_kwh)
             : null;
         lines.push(el('p', {},
-            el('strong', {}, `About ${fmtKwh(rec.capacity_kwh)} suits your usage. `),
+            el('strong', {}, `About ${fmtKwh(rec.capacity_kwh)} best suits your usage. `),
             `It captures ${Math.round(rec.share * 100)}% of the saving a ${fmtKwh(rec.sweep_max_kwh)} battery would give `
             + `(${fmtDollars(rec.annual_savings_dollars)} of ${fmtDollars(rec.max_annual_savings_dollars)} a year${proj ? ', projected' : ''}).`,
             marginal !== null ? ` Beyond that, each extra kWh adds only about ${fmtDollars(marginal, { cents: true })} a year.` : ''));
@@ -1240,15 +1240,19 @@ function renderComparison() {
     if (rec && rec.best_payback_option !== null && rec.best_payback_option !== undefined) {
         const bp = opts[rec.best_payback_option];
         const bv = opts[rec.best_value_option];
-        let text = `Of your options, ${name(rec.best_payback_option)} (${fmtKwh(bp.capacity_kwh)}) pays back fastest, in ${bp.payback_years} years`;
+        const roi = `If return on investment comes first, ${name(rec.best_payback_option)} (${fmtKwh(bp.capacity_kwh)}) `;
+        let lead, rest;
         if (bv && rec.best_value_option === rec.best_payback_option) {
-            text += `, and gives the best ${rec.life_years}-year return (${signedDollars(bv.ten_year_net_dollars)}).`;
-        } else if (bv) {
-            text += `; ${name(rec.best_value_option)} (${fmtKwh(bv.capacity_kwh)}) gives the best ${rec.life_years}-year return (${signedDollars(bv.ten_year_net_dollars)}).`;
+            lead = roi + 'is the better choice. ';
+            rest = `It pays back fastest, in ${bp.payback_years} years, and gives the best ${rec.life_years}-year return (${signedDollars(bv.ten_year_net_dollars)}).`;
         } else {
-            text += '.';
+            lead = roi + `pays back fastest, in ${bp.payback_years} years`;
+            rest = bv
+                ? `, while ${name(rec.best_value_option)} (${fmtKwh(bv.capacity_kwh)}) gives the best ${rec.life_years}-year return (${signedDollars(bv.ten_year_net_dollars)}).`
+                : '.';
         }
-        lines.push(el('p', {}, text));
+        const text = [el('strong', {}, lead), rest];
+        lines.push(el('p', {}, ...text));
     } else {
         lines.push(el('p', { class: 'muted' }, 'Add an installed price to each battery to compare payback and long-term return.'));
     }
