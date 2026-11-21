@@ -42,86 +42,25 @@ def test_parse_args_defaults():
     assert a.port == 8000 and a.data_dir is None and a.no_browser is False
 
 
-# --- login browser choice ---
+# --- login window helper ---
 
-class FakeChromium:
-    def __init__(self, available):
-        self.available = available
-        self.calls = []
-
-    async def launch(self, headless=True, channel=None):
-        name = channel or "chromium"
-        self.calls.append(name)
-        if name not in self.available:
-            raise RuntimeError(f"{name} is not installed")
-        return f"browser:{name}"
+def test_helper_command_from_python():
+    assert bc.host_command()[1:] == ["-m", "synergy_analyser.webview_host"]
 
 
-async def _launch(monkeypatch, available, preferred=None, installs=None):
-    if preferred:
-        monkeypatch.setenv("SYNERGY_BROWSER", preferred)
-    else:
-        monkeypatch.delenv("SYNERGY_BROWSER", raising=False)
-    client = bc.SynergyBrowserClient()
-    fake = FakeChromium(set(available))
-    client._pw = type("PW", (), {"chromium": fake})()
-
-    def fake_install():
-        installs.append(True)
-        fake.available.add("chromium")
-    monkeypatch.setattr(bc, "install_playwright_chromium", fake_install)
-    browser = await client._launch_browser()
-    return client, fake, browser
+def test_helper_command_in_standalone_binary(monkeypatch):
+    monkeypatch.setattr(bc.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(bc.sys, "executable", "/app/synergy-battery-analyser")
+    assert bc.host_command() == ["/app/synergy-battery-analyser", "--webview-host"]
 
 
-@pytest.mark.asyncio
-async def test_prefers_installed_chrome(monkeypatch):
-    client, fake, browser = await _launch(monkeypatch, {"chrome", "msedge", "chromium"}, installs=[])
-    assert browser == "browser:chrome" and client.browser_name == "chrome"
-    assert fake.calls == ["chrome"]
-
-
-@pytest.mark.asyncio
-async def test_falls_back_to_edge_then_chromium(monkeypatch):
-    client, fake, _ = await _launch(monkeypatch, {"msedge"}, installs=[])
-    assert client.browser_name == "msedge"
-    client, fake, _ = await _launch(monkeypatch, {"chromium"}, installs=[])
-    assert client.browser_name == "chromium" and fake.calls == ["chrome", "msedge", "chromium"]
-
-
-@pytest.mark.asyncio
-async def test_downloads_chromium_once_when_nothing_is_installed(monkeypatch):
-    installs = []
-    client, fake, browser = await _launch(monkeypatch, set(), installs=installs)
-    assert installs == [True]
-    assert browser == "browser:chromium" and client.browser_name == "chromium"
-
-
-@pytest.mark.asyncio
-async def test_forced_browser_that_is_missing_errors_without_downloading(monkeypatch):
-    installs = []
-    with pytest.raises(RuntimeError, match="Could not start the login browser"):
-        await _launch(monkeypatch, {"chromium"}, preferred="chrome", installs=installs)
-    assert installs == []
-
-
-def test_frozen_build_keeps_browser_download_in_app_folder(monkeypatch, tmp_path):
-    monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
-    monkeypatch.setattr(cli, "app_dir", lambda: tmp_path)
-    monkeypatch.setattr(cli.sys, "frozen", True, raising=False)
-    cli.configure_frozen_browser_path()
-    assert cli.os.environ["PLAYWRIGHT_BROWSERS_PATH"] == str(tmp_path / "browsers")
-
-
-def test_non_frozen_and_explicit_browser_paths_are_left_alone(monkeypatch, tmp_path):
-    monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
-    monkeypatch.delattr(cli.sys, "frozen", raising=False)
-    cli.configure_frozen_browser_path()
-    assert "PLAYWRIGHT_BROWSERS_PATH" not in cli.os.environ
-    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", "/custom")
-    monkeypatch.setattr(cli.sys, "frozen", True, raising=False)
-    cli.configure_frozen_browser_path()
-    assert cli.os.environ["PLAYWRIGHT_BROWSERS_PATH"] == "/custom"
+def test_binary_runs_the_helper_when_asked(monkeypatch):
+    import synergy_analyser.webview_host as host
+    ran = []
+    monkeypatch.setattr(host, "main", lambda: ran.append(True))
+    monkeypatch.setattr(cli, "parse_args", lambda argv: pytest.fail("should not start the app"))
+    cli.main(["--webview-host"])
+    assert ran == [True]
 
 
 # --- single instance / quit ---
@@ -177,5 +116,5 @@ def test_missing_streams_go_to_a_log_file(monkeypatch, tmp_path):
     cli.sys.stderr.write("driver output\n")
     text = (tmp_path / "app" / "app.log").read_text()
     assert "started" in text and "driver output" in text
-    assert cli.sys.stderr.fileno() >= 0  # a real file, as Playwright's driver needs
+    assert cli.sys.stderr.fileno() >= 0  # a real file, as the login helper process needs
     cli.sys.stdout.close()

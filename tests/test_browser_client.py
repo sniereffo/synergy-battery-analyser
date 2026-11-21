@@ -1,8 +1,8 @@
 import asyncio
 import json
+import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from urllib.parse import urlencode
 
 import pytest
 
@@ -67,98 +67,42 @@ async def test_get_range_single_chunk_for_short_span():
     assert calls == [(date(2026, 8, 1), date(2026, 8, 7))]
 
 
-# --- token harvesting ---
+# --- events from the login window helper ---
 
-AURA_URL = "https://my.synergy.net.au/s/sfsites/aura?r=5&other.Controller=1"
-
-
-class FakeRequest:
-    def __init__(self, post_data, method="POST", url=AURA_URL):
-        self.method = method
-        self.url = url
-        self.post_data = post_data
-
-
-def _aura_form(app: str, token: str = "TOKEN123", page_uri: str = "/s/usage") -> str:
-    ctx = json.dumps({"mode": "PROD", "app": app, "fwuid": "abc"})
-    return urlencode({
-        "message": "{}", "aura.context": ctx, "aura.token": token, "aura.pageURI": page_uri,
-    })
-
-
-def test_on_request_accepts_community_app_token():
+def test_helper_events_drive_state():
     client = SynergyBrowserClient()
-    assert not client.logged_in
-    client._on_request(FakeRequest(_aura_form("siteforce:communityApp")))
+    assert not client.window_open and not client.logged_in
+    client._handle({"event": "ready"})
+    assert client.window_open and client._ready.is_set()
+    client._handle({"event": "captcha", "score": 0.9, "passed": True})
+    assert client.captcha_score == 0.9
+    client._handle({"event": "logged_in"})
     assert client.logged_in
-    assert client._aura_token == "TOKEN123"
-    assert "siteforce:communityApp" in client._aura_context
-    assert client._page_uri == "/s/usage"
+    client._handle({"event": "closed"})
+    assert not client.window_open
 
 
-@pytest.mark.parametrize("request_", [
-    # The login page's own Aura traffic carries a token but no data session.
-    FakeRequest(_aura_form("siteforce:loginApp2")),
-    FakeRequest(_aura_form("siteforce:communityApp"), method="GET"),
-    FakeRequest(_aura_form("siteforce:communityApp"), url="https://my.synergy.net.au/s/other"),
-    FakeRequest(None),
-    FakeRequest(urlencode({"aura.context": '{"app":"siteforce:communityApp"}'})),  # no token
-])
-def test_on_request_ignores_non_community_traffic(request_):
+# --- data calls through the page ---
+
+def _logged_in_client(status: int, text: str) -> SynergyBrowserClient:
+    """A client whose helper answers every post with (status, text)."""
     client = SynergyBrowserClient()
-    client._on_request(request_)
-    assert not client.logged_in
+    client._handle({"event": "ready"})
+    client._handle({"event": "logged_in"})
+    client.sent = []
 
-
-def test_window_open_tracks_page():
-    class Page:
-        closed = False
-
-        def is_closed(self):
-            return self.closed
-
-    client = SynergyBrowserClient()
-    assert client.window_open is False
-    client._page = Page()
-    assert client.window_open is True
-    client._page.closed = True
-    assert client.window_open is False
-
-
-# --- session-expiry mapping ---
-
-class FakeResponse:
-    def __init__(self, status: int, body: str):
-        self.status = status
-        self.ok = 200 <= status < 300
-        self._body = body
-
-    async def text(self):
-        return self._body
-
-
-class FakeContext:
-    def __init__(self, response: FakeResponse):
-        self.posts = []
-        response_ = response
-
-        class _Request:
-            async def post(_self, url, form=None, headers=None):
-                self.posts.append((url, form))
-                return response_
-
-        self.request = _Request()
-
-
-def _logged_in_client(response: FakeResponse) -> SynergyBrowserClient:
-    client = SynergyBrowserClient()
-    client._on_request(FakeRequest(_aura_form("siteforce:communityApp")))
-    client._context = FakeContext(response)
+    def send(obj):
+        client.sent.append(obj)
+        if obj["op"] == "post":
+            asyncio.get_running_loop().call_soon(
+                client._handle, {"id": obj["id"], "status": status, "text": text})
+    client._send = send
     return client
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status,body", [
+    (0, "not_logged_in"),                      # the page lost its portal session
     (401, '{"actions": []}'),
     (403, ""),
     (200, "<!DOCTYPE html><html><body>Login</body></html>"),
@@ -170,21 +114,21 @@ def _logged_in_client(response: FakeResponse) -> SynergyBrowserClient:
                                    "error": [{"message": "Invalid Session ID"}]}]})),
 ])
 async def test_rejected_session_raises_not_logged_in(status, body):
-    client = _logged_in_client(FakeResponse(status, body))
-    assert client.logged_in
+    client = _logged_in_client(status, body)
     with pytest.raises(NotLoggedIn):
         await client._call_ip("MyAccount_ChartData", {"ServiceId": "001X"})
     assert client.logged_in is False
-    # A follow-up call fails fast without touching the network.
-    posts = len(client._context.posts)
+    # A follow-up call fails fast without touching the page.
+    sent = len(client.sent)
     with pytest.raises(NotLoggedIn):
         await client._call_ip("MyAccount_ChartData", {"ServiceId": "001X"})
-    assert len(client._context.posts) == posts
+    assert len(client.sent) == sent
 
 
 @pytest.mark.asyncio
-async def test_server_error_is_not_treated_as_logout():
-    client = _logged_in_client(FakeResponse(500, "oops"))
+@pytest.mark.parametrize("status,text", [(500, "oops"), (-1, "TypeError: Load failed")])
+async def test_server_or_network_error_is_not_treated_as_logout(status, text):
+    client = _logged_in_client(status, text)
     with pytest.raises(RuntimeError) as err:
         await client._call_ip("MyAccount_ChartData", {})
     assert not isinstance(err.value, NotLoggedIn)
@@ -192,16 +136,25 @@ async def test_server_error_is_not_treated_as_logout():
 
 
 @pytest.mark.asyncio
-async def test_successful_call_returns_ip_result_with_session_credentials():
+async def test_successful_call_returns_ip_result():
     inner = {"IPResult": {"ChartData": {"Response": []}}}
     body = json.dumps({"actions": [{"state": "SUCCESS",
                                     "returnValue": {"returnValue": json.dumps(inner)}}]})
-    client = _logged_in_client(FakeResponse(200, body))
+    client = _logged_in_client(200, body)
     assert await client._call_ip("MyAccount_ChartData", {}) == inner
     assert client.logged_in
-    _, form = client._context.posts[0]
-    assert form["aura.token"] == "TOKEN123"
-    assert form["aura.pageURI"] == "/s/usage"
+    post = client.sent[0]
+    # The page adds the session token itself; the app only sends the action.
+    assert set(post) == {"op", "id", "message"}
+    assert "GenericInvoke2NoCont" in post["message"]
+
+
+@pytest.mark.asyncio
+async def test_finalize_login_hides_the_window():
+    client = _logged_in_client(200, "{}")
+    await client.finalize_login()
+    assert client.sent == [{"op": "hide"}]
+    assert not client.window_open and client.logged_in
 
 
 @pytest.mark.asyncio
@@ -242,7 +195,7 @@ async def test_get_range_chunk_failure_propagates_and_cancels_others():
 @pytest.mark.asyncio
 async def test_get_range_empty_chunk_yields_no_intervals():
     client = SynergyBrowserClient()
-    client._aura_token, client._aura_context = "T", "C"
+    client._logged_in = True
     half = json.loads((FIXTURES / "chartdata_halfhourly_day.json").read_text())
 
     async def fake_call_ip(ip_method, ip_input):
@@ -263,7 +216,7 @@ async def test_get_range_empty_chunk_yields_no_intervals():
 @pytest.mark.asyncio
 async def test_get_day_with_no_data_is_empty():
     client = SynergyBrowserClient()
-    client._aura_token, client._aura_context = "T", "C"
+    client._logged_in = True
 
     async def fake_call_ip(ip_method, ip_input):
         return {"ChartData": {}}
@@ -272,7 +225,50 @@ async def test_get_day_with_no_data_is_empty():
     assert await client.get_day("001X", date(2026, 8, 2)) == []
 
 
-# --- lifecycle ---
+# --- lifecycle (real helper process, stood in for by a tiny script) ---
+
+FAKE_HOST = r"""
+import json, sys
+print(json.dumps({"event": "ready"}), flush=True)
+for line in sys.stdin:
+    cmd = json.loads(line)
+    if cmd["op"] == "post":
+        if "die" in cmd["message"]:
+            sys.exit(3)
+        print(json.dumps({"event": "logged_in"}), flush=True)
+        body = {"actions": [{"state": "SUCCESS", "returnValue": {"returnValue": {"ok": cmd["id"]}}}]}
+        print(json.dumps({"id": cmd["id"], "status": 200, "text": json.dumps(body)}), flush=True)
+    elif cmd["op"] == "close":
+        break
+"""
+
+
+@pytest.mark.asyncio
+async def test_start_post_and_close_with_a_helper_process(monkeypatch):
+    monkeypatch.setattr(browser_client, "host_command", lambda: [sys.executable, "-c", FAKE_HOST])
+    client = SynergyBrowserClient()
+    await client.start()
+    assert client.window_open
+    client._logged_in = True
+    result = await client._call_apex("", "C", "m", {})
+    assert "ok" in result
+    proc = client._proc
+    await client.close()
+    assert proc.returncode == 0  # it was asked to close, not killed
+    assert client._proc is None and not client.logged_in
+
+
+@pytest.mark.asyncio
+async def test_helper_exiting_mid_request_reports_logout(monkeypatch):
+    monkeypatch.setattr(browser_client, "host_command", lambda: [sys.executable, "-c", FAKE_HOST])
+    client = SynergyBrowserClient()
+    await client.start()
+    client._logged_in = True
+    with pytest.raises(NotLoggedIn):
+        await client._call_apex("", "die", "m", {})
+    assert not client.logged_in
+    await client.close()
+
 
 @pytest.mark.asyncio
 async def test_close_is_idempotent_without_start():
@@ -283,30 +279,10 @@ async def test_close_is_idempotent_without_start():
 
 
 @pytest.mark.asyncio
-async def test_start_failure_tears_down_and_reraises(monkeypatch):
-    stopped = []
-
-    class FakePW:
-        class chromium:
-            @staticmethod
-            async def launch(headless, channel=None):
-                raise RuntimeError("Executable doesn't exist")
-
-        async def stop(self):
-            stopped.append(True)
-
-    class FakeManager:
-        async def start(self):
-            return FakePW()
-
-    monkeypatch.setattr(browser_client, "async_playwright", lambda: FakeManager())
-    monkeypatch.delenv("SYNERGY_BROWSER", raising=False)
-
-    def offline_install():  # no Chrome/Edge, and the one-off download fails
-        raise RuntimeError("Executable doesn't exist (download failed: offline)")
-    monkeypatch.setattr(browser_client, "install_playwright_chromium", offline_install)
+async def test_start_failure_tears_down_and_reports_why(monkeypatch):
+    monkeypatch.setattr(browser_client, "host_command", lambda: [
+        sys.executable, "-c", "import sys; sys.stderr.write('Namespace WebKit2 not available\\n'); sys.exit(1)"])
     client = SynergyBrowserClient()
-    with pytest.raises(RuntimeError, match="Executable doesn't exist"):
+    with pytest.raises(RuntimeError, match="WebKit2 not available"):
         await client.start()
-    assert stopped == [True]
-    assert client._pw is None and client._browser is None and client._page is None
+    assert client._proc is None and not client.window_open

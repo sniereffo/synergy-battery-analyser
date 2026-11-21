@@ -20,6 +20,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
+      # PyGObject (the Linux login window's bindings) builds against these.
+      - run: sudo apt-get update && sudo apt-get install -y libgirepository-2.0-dev libcairo2-dev
       - run: uv sync --group dev
       - run: uv run pytest -q
 
@@ -46,6 +48,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
 
+      # Linux: build PyGObject, and give the smoke test WebKitGTK (from the
+      # system, as on users' machines) plus a virtual display.
+      - if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgirepository-2.0-dev libcairo2-dev gir1.2-webkit2-4.1 xvfb
+
       # Install the app normally (not editable) so PyInstaller can find it.
       - run: uv sync --group dev --no-editable
       - run: uv run --no-sync pyinstaller --noconfirm synergy-battery-analyser.spec
@@ -65,7 +74,8 @@ jobs:
           ivs = [{**i, "timestamp": i["timestamp"].isoformat()} for i in parse_halfhourly_response(raw)]
           Path(sys.argv[1], "sample.json").write_text(json.dumps({"tariff_label": "EV2 TARIFF", "intervals": ivs}))
           PY
-          "${{ matrix.exe }}" --no-browser --port 8411 --data-dir "$DATA" > "$RUNNER_TEMP/app.log" 2>&1 &
+          RUN=""; [ "${{ runner.os }}" = Linux ] && RUN="xvfb-run -a"
+          $RUN "${{ matrix.exe }}" --no-browser --port 8411 --data-dir "$DATA" > "$RUNNER_TEMP/app.log" 2>&1 &
           APP_PID=$!
           for i in $(seq 1 60); do curl -sf http://127.0.0.1:8411/api/health && break; sleep 1; done
           cat "$RUNNER_TEMP/app.log"
@@ -80,10 +90,11 @@ jobs:
             sleep 1
           done
           [ "$STATUS" = done ]
-          # Open the login window (hidden): proves the bundled Playwright driver
-          # can start a browser (the runner's Chrome, else a one-off Chromium).
-          curl -sf -m 600 -X POST http://127.0.0.1:8411/api/auth/open-login
-          curl -sf http://127.0.0.1:8411/api/auth/status
+          # Open the login window (hidden): proves the binary can start its
+          # helper process and the system web view loads Synergy's page.
+          curl -sf -m 120 -X POST http://127.0.0.1:8411/api/auth/open-login
+          sleep 5
+          curl -sf http://127.0.0.1:8411/api/auth/status | grep -q '"browser_open":true'
           curl -sf -X POST http://127.0.0.1:8411/api/auth/reset
           # The page's Quit button: the only way to stop the Mac app.
           curl -sf http://127.0.0.1:8411/api/health | grep -q '"can_quit":true'

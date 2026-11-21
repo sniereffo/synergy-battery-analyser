@@ -21,7 +21,7 @@ APP_DIR_NAME = "synergy-analyser"
 
 
 def app_dir() -> Path:
-    """Per-user folder for this app's files (saved data, downloaded browser)."""
+    """Per-user folder for this app's files (saved data, login window storage, log)."""
     home = Path.home()
     if sys.platform == "win32":
         base = Path(os.environ.get("LOCALAPPDATA") or home / "AppData" / "Local")
@@ -38,19 +38,6 @@ def default_data_dir() -> Path:
     if override:
         return Path(override).expanduser()
     return app_dir() / "data"
-
-
-def configure_frozen_browser_path() -> None:
-    """In a standalone binary, keep Playwright's downloaded browser in a
-    permanent per-user folder.
-
-    Inside a frozen build Playwright otherwise defaults to the binary's
-    temporary unpack folder, which is recreated every launch, so the one-off
-    browser download would be lost each time. Installs run with Python (uv,
-    dev) keep Playwright's normal shared location.
-    """
-    if getattr(sys, "frozen", False) and not os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
-        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(app_dir() / "browsers")
 
 
 def find_free_port(preferred: int, attempts: int = 20) -> int:
@@ -92,8 +79,9 @@ def running_instance(port: int) -> bool:
 def ensure_output_streams() -> None:
     """Give a console-less build (the Mac app) somewhere to write.
 
-    Without a console, stdout/stderr can be missing, and Playwright's driver
-    needs a real stream; app.log in the app folder also helps with support.
+    Without a console, stdout/stderr can be missing, and the login window's
+    helper process needs real streams; app.log in the app folder also helps
+    with support.
     """
     if sys.stdout is not None and sys.stderr is not None:
         return
@@ -116,9 +104,14 @@ def say(*lines: str) -> None:
 
 
 def main(argv=None) -> None:
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["--webview-host"]:
+        # The standalone binary doubles as the login window's helper process.
+        from .webview_host import main as host_main
+        host_main()
+        return
     args = parse_args(argv)
     ensure_output_streams()
-    configure_frozen_browser_path()
     data_dir = (args.data_dir or default_data_dir()).expanduser().resolve()
     data_dir.mkdir(parents=True, exist_ok=True)
 

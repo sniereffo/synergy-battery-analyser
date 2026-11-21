@@ -2,7 +2,7 @@
 
 Run:  uv run python scripts/smoke_fetch.py [YYYY-MM-DD]
 
-A Chromium window opens on the Synergy portal. Log in (email/password + MFA).
+A login window (the system web view) opens on the Synergy portal. Log in (email/password + MFA).
 Once you reach your dashboard, this script lists your services and fetches one
 day of half-hourly data, printing per-tariff totals so you can cross-check
 against the portal's own usage chart.
@@ -21,9 +21,9 @@ from synergy_analyser.browser_client import SynergyBrowserClient
 
 async def main():
     day = date.fromisoformat(sys.argv[1]) if len(sys.argv) > 1 else date(2026, 8, 2)
-    client = SynergyBrowserClient(headless=False)
+    client = SynergyBrowserClient()
     await client.start()
-    print("\n>>> A browser window has opened. Log in to Synergy (email/password + MFA).")
+    print("\n>>> A login window has opened. Log in to Synergy (email/password + MFA).")
     print(">>> Waiting for login (up to 5 min)...")
     await client.wait_until_logged_in(timeout=300)
     print(">>> Logged in — session captured.\n")

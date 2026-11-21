@@ -57,7 +57,7 @@ def _summarise(result):
 
 
 async def main():
-    client = SynergyBrowserClient(headless=False)
+    client = SynergyBrowserClient()
     await client.start()
     print("\n>>> Log in to Synergy in the browser window…")
     await client.wait_until_logged_in(timeout=300)

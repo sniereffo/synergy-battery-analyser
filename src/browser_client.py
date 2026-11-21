@@ -1,22 +1,21 @@
-"""Browser-assisted Synergy portal client.
+"""Synergy portal client: login in the system web view, data over Aura RPC.
 
-The new portal logs in behind Salesforce MFA + reCAPTCHA Enterprise, which
-cannot be scripted headlessly. So we launch a real (headed) Chromium window and
-let the user log in themselves. Once authenticated, we harvest a valid
-`aura.token` / `aura.context` from the page's own traffic and issue
-`MyAccount_ChartData` calls ourselves via the shared browser context (cookies
-attach automatically), fetching half-hourly usage in date-span requests
-(the portal returns every day in StartDate..EndDate per call).
+Synergy's login runs an invisible reCAPTCHA score check that automation-driven
+browsers fail, so the person logs in themselves in the operating system's own
+web view (see webview_host.py), which runs in a helper process. Once the
+portal app is running there, data calls (`MyAccount_ChartData` etc.) are made
+from inside that logged-in page, so the session never leaves the web view.
+Half-hourly usage is fetched in date-span requests (the portal returns every
+day in StartDate..EndDate per call).
 """
 
 import asyncio
 import json
 import logging
-import os
 import subprocess
+import sys
+from collections import deque
 from datetime import date, timedelta
-
-from playwright.async_api import async_playwright
 
 from .aura import (
     build_apex_action,
@@ -29,31 +28,18 @@ from .chartdata import parse_halfhourly_response
 
 log = logging.getLogger(__name__)
 
-PORTAL_URL = "https://my.synergy.net.au/s/"
-
-# Browsers tried for the login window, in order. Using the person's installed
-# Chrome or Edge (with a fresh, temporary profile — never their own profile or
-# cookies) means nothing has to be downloaded. "chromium" is Playwright's own
-# build, downloaded once on first use if neither is installed. Override with
-# SYNERGY_BROWSER=chrome|msedge|chromium.
-BROWSER_ORDER = ("chrome", "msedge", "chromium")
-
-
-def install_playwright_chromium() -> None:
-    """Download Playwright's Chromium for the login window (one-off).
-
-    Calls Playwright's bundled driver directly rather than `python -m
-    playwright`, so it also works inside a frozen (PyInstaller) build.
-    """
-    from playwright._impl._driver import compute_driver_executable, get_driver_env
-
-    driver, cli = compute_driver_executable()
-    log.warning("No Chrome or Edge found; downloading a browser for the Synergy login (one-off)…")
-    # --no-shell: skip the headless variant the login window never uses
-    # (~390 MB installed instead of ~650 MB).
-    subprocess.run([driver, cli, "install", "--no-shell", "chromium"], env=get_driver_env(),
-                   check=True, capture_output=True)
 AURA_PATH = "/s/sfsites/aura"
+START_TIMEOUT = 60.0      # seconds for the login window to appear
+REQUEST_TIMEOUT = 180.0   # seconds for one data call
+MAX_LINE = 256 * 1024 * 1024  # a year-long data reply is a few MB; allow plenty
+
+
+def host_command() -> list[str]:
+    """How to start the login-window helper process."""
+    if getattr(sys, "frozen", False):
+        # The standalone binary is its own helper (cli.main dispatches on this flag).
+        return [sys.executable, "--webview-host"]
+    return [sys.executable, "-m", "synergy_analyser.webview_host"]
 
 
 class NotLoggedIn(RuntimeError):
@@ -61,115 +47,110 @@ class NotLoggedIn(RuntimeError):
 
 
 class SynergyBrowserClient:
-    def __init__(self, headless: bool = False):
-        # SYNERGY_LOGIN_HEADLESS=1 hides the login window (automated checks
-        # only: a person can't log in to a window they can't see).
-        self._headless = headless or os.environ.get("SYNERGY_LOGIN_HEADLESS") == "1"
-        self._pw = None
-        self._browser = None
-        self._context = None
-        self._page = None
-        # Harvested from live traffic once the user is logged in.
-        self._aura_context: str | None = None
-        self._aura_token: str | None = None
-        self._page_uri: str = "/s/"
+    def __init__(self):
+        self._proc: asyncio.subprocess.Process | None = None
+        self._reader: asyncio.Task | None = None
+        self._stderr_task: asyncio.Task | None = None
+        self._stderr_tail: deque[str] = deque(maxlen=20)
+        self._pending: dict[int, asyncio.Future] = {}
+        self._ready = asyncio.Event()
+        self._logged_in = False
+        self._window_open = False
         self._request_id = 1000
-        self.browser_name: str | None = None  # which browser was launched
+        self.captcha_score: float | None = None  # last login bot-check result
+        self.browser_name = "webview"
 
     async def start(self):
-        """Launch the browser and begin capturing Aura credentials.
+        """Open the login window (helper process) on Synergy's portal.
 
-        On failure (e.g. Chromium not installed) everything already started is
-        torn down before the exception propagates.
+        On failure everything already started is torn down before the
+        exception propagates.
         """
         try:
-            from .cli import configure_frozen_browser_path
-            configure_frozen_browser_path()  # no-op outside a standalone binary
-            self._pw = await async_playwright().start()
-            self._browser = await self._launch_browser()
-            self._context = await self._browser.new_context()
-            self._page = await self._context.new_page()
-            self._context.on("request", self._on_request)
-            await self._page.goto(PORTAL_URL)
+            kwargs = {}
+            if sys.platform == "win32":
+                kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW  # no extra console
+            self._proc = await asyncio.create_subprocess_exec(
+                *host_command(),
+                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE, limit=MAX_LINE, **kwargs,
+            )
+            self._reader = asyncio.create_task(self._read_events())
+            self._stderr_task = asyncio.create_task(self._read_stderr())
+            done, _ = await asyncio.wait(
+                [asyncio.create_task(self._ready.wait()), self._reader],
+                timeout=START_TIMEOUT, return_when=asyncio.FIRST_COMPLETED,
+            )
+            if not self._ready.is_set():
+                await asyncio.sleep(0.2)  # let stderr catch up for the message
+                detail = self._stderr_tail[-1] if self._stderr_tail else "no details"
+                raise RuntimeError(f"the login window didn't start ({detail})")
         except BaseException:
             await self.close()
             raise
 
-    async def _launch_browser(self):
-        """Launch the first available browser from BROWSER_ORDER.
+    async def _read_events(self):
+        """Dispatch the helper's messages until it exits."""
+        try:
+            async for raw in self._proc.stdout:
+                try:
+                    msg = json.loads(raw)
+                except ValueError:
+                    continue
+                self._handle(msg)
+        finally:
+            self._logged_in = False
+            self._window_open = False
+            for fut in self._pending.values():
+                if not fut.done():
+                    fut.set_exception(NotLoggedIn("The Synergy login window closed; log in again"))
+            self._pending.clear()
 
-        If none can start and Playwright's Chromium is allowed, download it once
-        and try again.
-        """
-        preferred = (os.environ.get("SYNERGY_BROWSER") or "").strip().lower()
-        order = (preferred,) if preferred in BROWSER_ORDER else BROWSER_ORDER
-        errors = []
-        for name in order:
-            try:
-                if name == "chromium":
-                    # channel="chromium": always the full browser (also when
-                    # hidden), never the separate headless shell we don't download.
-                    browser = await self._pw.chromium.launch(channel="chromium", headless=self._headless)
-                else:
-                    browser = await self._pw.chromium.launch(channel=name, headless=self._headless)
-                self.browser_name = name
-                return browser
-            except Exception as e:  # noqa: BLE001 — not installed / can't start: try the next
-                errors.append(f"{name}: {str(e).splitlines()[0][:120]}")
-        if "chromium" not in order:
-            raise RuntimeError("Could not start the login browser (" + "; ".join(errors) + ")")
-        await asyncio.to_thread(install_playwright_chromium)
-        browser = await self._pw.chromium.launch(channel="chromium", headless=self._headless)
-        self.browser_name = "chromium"
-        return browser
+    def _handle(self, msg: dict):
+        event = msg.get("event")
+        if event == "ready":
+            self._window_open = True
+            self._ready.set()
+        elif event == "logged_in":
+            self._logged_in = True
+        elif event == "captcha":
+            self.captcha_score = msg.get("score")
+            if not msg.get("passed"):
+                log.warning("Synergy's login check failed (score %s)", msg.get("score"))
+        elif event == "closed":
+            self._window_open = False
+        elif "id" in msg:
+            fut = self._pending.pop(msg["id"], None)
+            if fut is not None and not fut.done():
+                fut.set_result((msg.get("status"), msg.get("text") or ""))
 
-    def _on_request(self, request):
-        """Sniff Aura POSTs to harvest the authenticated session token + context.
+    async def _read_stderr(self):
+        async for raw in self._proc.stderr:
+            line = raw.decode(errors="replace").rstrip()
+            if line:
+                self._stderr_tail.append(line[:300])
+                log.debug("login window: %s", line)
 
-        Only accept traffic from the community app (`siteforce:communityApp`).
-        The login page also makes Aura calls (`siteforce:loginApp2`) that carry a
-        token but no valid data session — ignoring those avoids reporting
-        "logged in" while the user is still on the login screen.
-        """
-        if request.method != "POST" or AURA_PATH not in request.url:
-            return
-        data = request.post_data
-        if not data:
-            return
-        from urllib.parse import parse_qs
-
-        form = parse_qs(data)
-        if "aura.token" not in form or "aura.context" not in form:
-            return
-        context = form["aura.context"][0]
-        if "siteforce:communityApp" not in context:
-            return
-        self._aura_token = form["aura.token"][0]
-        self._aura_context = context
-        if "aura.pageURI" in form:
-            self._page_uri = form["aura.pageURI"][0]
+    def _send(self, obj: dict):
+        if self._proc is None or self._proc.stdin is None or self._proc.returncode is not None:
+            raise NotLoggedIn("The Synergy login window isn't open; log in again")
+        self._proc.stdin.write((json.dumps(obj) + "\n").encode())
 
     @property
     def logged_in(self) -> bool:
-        return self._aura_token is not None and self._aura_context is not None
+        return self._logged_in
 
     @property
     def window_open(self) -> bool:
-        """True while the login page/window exists and has not been closed."""
-        return self._page is not None and not self._page.is_closed()
+        """True while the login window is showing (not closed, not hidden)."""
+        return self._window_open
 
     def _invalidate(self):
-        """Forget harvested credentials after the portal rejects the session."""
-        self._aura_token = None
-        self._aura_context = None
+        """Forget the session after the portal rejects it."""
+        self._logged_in = False
 
     async def wait_until_logged_in(self, timeout: float = 300.0, poll: float = 1.0):
-        """Block until the user has logged in (Aura credentials observed).
-
-        The user completes email/password + MFA (+ any captcha) in the window.
-        As soon as the authenticated app issues an Aura POST we capture what we
-        need. Raises TimeoutError if not logged in within `timeout` seconds.
-        """
+        """Block until the user has logged in. Raises TimeoutError otherwise."""
         waited = 0.0
         while waited < timeout:
             if self.logged_in:
@@ -179,40 +160,40 @@ class SynergyBrowserClient:
         raise TimeoutError("Timed out waiting for Synergy login")
 
     async def finalize_login(self):
-        """Close the visible browser window once logged in.
+        """Hide the login window once logged in.
 
-        The authenticated session lives in the browser *context* (cookies) and
-        the harvested aura token, not the page — so we can close the window and
-        still issue data calls via `context.request`.
+        The session lives in the (now hidden) page, which keeps serving data
+        calls until the app closes it.
         """
-        if self._page is not None and not self._page.is_closed():
-            await self._page.close()
-            self._page = None
+        if self._window_open:
+            self._send({"op": "hide"})
+            self._window_open = False
 
     def _next_id(self) -> int:
         self._request_id += 1
         return self._request_id
 
     async def _post_action(self, action: dict) -> dict:
-        """POST a single Aura action and return its parsed result."""
-        form = {
-            "message": build_message([action]),
-            "aura.context": self._aura_context,
-            "aura.token": self._aura_token,
-            "aura.pageURI": self._page_uri,
-        }
-        # Reuse the browser context so the session cookies attach automatically.
-        resp = await self._context.request.post(
-            f"https://my.synergy.net.au{AURA_PATH}?r={self._next_id()}&aura.ApexAction.execute=1",
-            form=form,
-            headers={"Origin": "https://my.synergy.net.au"},
-        )
-        if resp.status in (401, 403):
+        """POST a single Aura action from inside the logged-in page."""
+        request_id = self._next_id()
+        fut = asyncio.get_running_loop().create_future()
+        self._pending[request_id] = fut
+        try:
+            self._send({"op": "post", "id": request_id, "message": build_message([action])})
+            status, text = await asyncio.wait_for(fut, REQUEST_TIMEOUT)
+        finally:
+            self._pending.pop(request_id, None)
+        return self._parse_response(status, text)
+
+    def _parse_response(self, status, text: str) -> dict:
+        if status == 0:  # the page has no portal session (e.g. it went back to the login page)
             self._invalidate()
-            raise NotLoggedIn(f"Synergy session rejected (HTTP {resp.status}); log in again")
-        if not resp.ok:
-            raise RuntimeError(f"Aura call failed: HTTP {resp.status}")
-        text = await resp.text()
+            raise NotLoggedIn("Your Synergy session has ended; log in again")
+        if status in (401, 403):
+            self._invalidate()
+            raise NotLoggedIn(f"Synergy session rejected (HTTP {status}); log in again")
+        if not isinstance(status, int) or not 200 <= status < 300:
+            raise RuntimeError(f"Aura call failed: {'HTTP ' + str(status) if status != -1 else text[:200]}")
         try:
             body = json.loads(text)
         except ValueError:
@@ -241,13 +222,13 @@ class SynergyBrowserClient:
     async def _call_ip(self, ip_method: str, ip_input: dict) -> dict:
         """Invoke a Vlocity Integration Procedure and return its result."""
         if not self.logged_in:
-            raise NotLoggedIn("Log in via the browser first")
+            raise NotLoggedIn("Log in to Synergy first")
         return await self._post_action(build_ip_action(ip_method, ip_input, self._next_id()))
 
     async def _call_apex(self, namespace: str, classname: str, method: str, params: dict) -> dict:
         """Invoke a direct @AuraEnabled Apex controller method and return its result."""
         if not self.logged_in:
-            raise NotLoggedIn("Log in via the browser first")
+            raise NotLoggedIn("Log in to Synergy first")
         return await self._post_action(
             build_apex_action(namespace, classname, method, params, self._next_id())
         )
@@ -346,17 +327,22 @@ class SynergyBrowserClient:
         return intervals
 
     async def close(self):
-        """Tear down the browser. Idempotent; safe after a partial start()."""
-        context, browser, pw = self._context, self._browser, self._pw
-        self._context = self._browser = self._pw = self._page = None
-        for closer in (
-            context.close if context else None,
-            browser.close if browser else None,
-            pw.stop if pw else None,
-        ):
-            if closer is None:
-                continue
+        """Close the login window and its process. Idempotent; safe after a partial start()."""
+        proc, self._proc = self._proc, None
+        self._logged_in = self._window_open = False
+        if proc is not None and proc.returncode is None:
             try:
-                await closer()
-            except Exception:
-                pass
+                proc.stdin.write(b'{"op": "close"}\n')
+                await proc.stdin.drain()
+                proc.stdin.close()
+                await asyncio.wait_for(proc.wait(), 5)
+            except Exception:  # noqa: BLE001 — not answering: make sure it goes
+                try:
+                    proc.kill()
+                    await proc.wait()
+                except ProcessLookupError:
+                    pass
+        for task in (self._reader, self._stderr_task):
+            if task is not None and not task.done():
+                task.cancel()
+        self._reader = self._stderr_task = None

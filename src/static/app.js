@@ -522,16 +522,10 @@ function setStatus(state, text) {
 async function openLogin() {
     const btn = document.getElementById('loginBtn');
     btn.disabled = true;
-    setLoginLabel('Opening browser…');
-    // Without Chrome or Edge installed, the first login downloads a browser for
-    // the login window (a minute or two); say so if it's taking a while.
-    const slowHint = setTimeout(() => {
-        setLoginLabel('Downloading the login browser (first time only)…');
-        toast('First login: downloading a browser for the Synergy login window. This happens once and can take a minute or two.', '');
-    }, 6000);
+    setLoginLabel('Opening login window…');
     try {
         const res = await fetch('/api/auth/open-login', { method: 'POST' });
-        if (!res.ok) throw new Error(await responseError(res, 'Could not open the login browser'));
+        if (!res.ok) throw new Error(await responseError(res, 'Could not open the login window'));
         setLoginLabel('Waiting for login…');
         document.getElementById('loginProgress').classList.remove('hidden');
         setStatus('connecting', 'Waiting for login…');
@@ -539,8 +533,6 @@ async function openLogin() {
     } catch (e) {
         toast('Could not open login: ' + e.message, 'error');
         resetLoginUI();
-    } finally {
-        clearTimeout(slowHint);
     }
 }
 

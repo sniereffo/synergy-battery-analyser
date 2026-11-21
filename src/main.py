@@ -83,8 +83,8 @@ async def _close_quietly(client: SynergyBrowserClient):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # The browser is only launched when the user asks to log in, so importing
-    # the app (e.g. under tests) never spawns Chromium.
+    # The login window is only opened when the user asks to log in, so
+    # importing the app (e.g. under tests) never starts one.
     app.state.synergy = None
     _reset_session_state()
     app.state.auth_lock = asyncio.Lock()
@@ -407,7 +407,7 @@ def list_data_files():
 
 @app.post("/api/auth/open-login")
 async def open_login():
-    """Launch the browser window for the user to log in to Synergy.
+    """Open the login window (system web view) for the user to log in to Synergy.
 
     If a previous window was abandoned (closed, or its session expired) it is
     discarded and a fresh one started.
@@ -421,17 +421,18 @@ async def open_login():
             await _close_quietly(client)
         _reset_session_state()
 
-        new_client = SynergyBrowserClient(headless=False)
+        new_client = SynergyBrowserClient()
         try:
             await new_client.start()
         except Exception as e:  # noqa: BLE001 — report any launch failure
             await _close_quietly(new_client)
-            raise HTTPException(
-                500,
-                f"Could not open the login browser: {_truncate(e)}. The login window "
-                "uses Chrome or Edge if installed; otherwise it downloads a browser "
-                "once, which needs an internet connection.",
-            )
+            hint = ""
+            if sys.platform.startswith("linux"):
+                hint = (" On Linux the login window needs WebKitGTK "
+                        "(e.g. the webkit2gtk-4.1 / libwebkit2gtk-4.1-0 package).")
+            elif sys.platform == "win32":
+                hint = " On Windows it needs the Microsoft Edge WebView2 Runtime (included with Windows 11)."
+            raise HTTPException(500, f"Could not open the Synergy login window: {_truncate(e)}.{hint}")
         app.state.synergy = new_client
     return {"status": "browser_opened"}
 
@@ -452,8 +453,8 @@ async def auth_reset():
 async def auth_status():
     """Report whether the user is logged in and, if so, their services.
 
-    On the first status check after login we fetch the service list and close
-    the visible browser window — the session persists in the browser context.
+    On the first status check after login we fetch the service list and hide
+    the login window; the session lives on in its hidden page.
     `browser_open` is true while a login window is open but not yet logged in.
     Never fails with a 500: an unexpected error fetching services/finalising
     is reported as `error` (logged_in false) so the UI can stop polling.

@@ -47,7 +47,7 @@ If you're comfortable with a terminal, [uv](https://docs.astral.sh/uv/getting-st
 uvx --from git+https://github.com/sniereffo/synergy-battery-analyser synergy-analyser
 ```
 
-uv downloads everything it needs, including the right version of Python. To keep it installed as a normal command instead:
+uv downloads everything it needs, including the right version of Python. On Linux it also builds the login window's GTK bindings, which needs a few system packages first: `sudo apt install libgirepository-2.0-dev libcairo2-dev gir1.2-webkit2-4.1` (Debian/Ubuntu). To keep it installed as a normal command instead:
 
 ```bash
 uv tool install git+https://github.com/sniereffo/synergy-battery-analyser
@@ -59,9 +59,15 @@ Options: `--port 8080` to use a different port (by default it uses 8000, or the 
 
 ### About the Synergy login window
 
-Synergy's login uses multi-factor authentication and a "are you human" check, so it can't be automated. When you click **Open Synergy login**, the app opens a separate browser window on Synergy's site. You log in as normal, including your one-time code, and the window closes by itself once you're in.
+Synergy's login uses multi-factor authentication and an invisible "are you human" check, so the app can't log in for you, and you log in yourself. When you click **Open Synergy login**, the app opens a small window showing Synergy's own login page. You log in as normal, including your one-time code, and the window closes by itself once you're in. The app then reads your usage through that (now hidden) page.
 
-That login window is controlled by the app (so it can read your usage after you log in), which needs **Google Chrome** or **Microsoft Edge**. If you have either installed, it's used, with a fresh, empty profile (never your own profile, bookmarks or cookies). If you only use Firefox or Safari, the app downloads its own copy of Chromium the first time you log in. That happens once, takes a minute or two, and uses about 400 MB of disk space. The app itself still opens in your normal browser.
+The window uses your computer's built-in web engine, so nothing extra is downloaded and it works whichever browser you normally use:
+
+- **Windows:** Microsoft Edge WebView2, included with Windows 11 and installed on most Windows 10 PCs (if it's missing, install the free "WebView2 Runtime" from Microsoft).
+- **Mac:** Apple's WebKit, built in.
+- **Linux:** WebKitGTK, which most desktops already have. If the window doesn't open, install it: `sudo apt install gir1.2-webkit2-4.1` (Debian/Ubuntu), `sudo dnf install webkit2gtk4.1` (Fedora) or `sudo pacman -S webkit2gtk-4.1` (Arch).
+
+The login window keeps its own cookies between runs, separate from your normal browser, so Synergy may recognise it next time. To clear them, delete the `webview` folder next to your saved data (see [Privacy and your data](#privacy-and-your-data)).
 
 ## Using it
 
@@ -111,7 +117,7 @@ These are estimates for personal planning based on your past usage. They're not 
 ## Privacy and your data
 
 - **Your password** is typed into Synergy's own website, in the login window. The app never sees or stores it.
-- **Your session** is held in memory only and ends when you close the app.
+- **Your session** stays inside the login window's page; the app asks that page to fetch your usage. It ends when you quit the app. The window's cookies are kept in a `webview` folder alongside the data folder below.
 - **Your usage data** is saved only on your computer, in:
   - Windows: `%LOCALAPPDATA%\synergy-analyser\data`
   - Mac: `~/Library/Application Support/synergy-analyser/data`
@@ -121,7 +127,8 @@ These are estimates for personal planning based on your past usage. They're not 
 
 ## Troubleshooting
 
-- **The login window doesn't open.** Check your internet connection (the first login may need to download a browser). Click **Open Synergy login** again. If it still fails, the message on screen says why.
+- **The login window doesn't open.** Click **Open Synergy login** again. If it still fails, the message on screen says why. On Linux, install WebKitGTK (see [About the Synergy login window](#about-the-synergy-login-window)).
+- **Synergy says "Sorry, Please refresh the page and try again" when you log in.** That's Synergy's "are you human" check. Close the login window and try again in a minute; if it keeps happening, log in once on Synergy's website in your normal browser, then try again.
 - **"Your Synergy session has expired".** Log in again; your data and settings are kept.
 - **A saved dataset is greyed out and marked "Old format".** It was saved by the version before Synergy changed its website in April 2026 and can't be read. Fetch the data again.
 - **Fewer days than you asked for.** Synergy only keeps a limited amount of history, and nothing before you moved in. The results cover the days returned, and a note lists any missing dates.
@@ -130,7 +137,7 @@ These are estimates for personal planning based on your past usage. They're not 
 
 ## Development
 
-Requires [uv](https://docs.astral.sh/uv/). The package is `synergy_analyser`; its source lives directly in `src/`.
+Requires [uv](https://docs.astral.sh/uv/). The package is `synergy_analyser`; its source lives directly in `src/`. On Linux, `uv sync` builds PyGObject (the login window's bindings), which needs the GObject introspection and cairo development files (`sudo apt install libgirepository-2.0-dev libcairo2-dev` on Debian/Ubuntu), plus WebKitGTK at run time.
 
 ```bash
 git clone https://github.com/sniereffo/synergy-battery-analyser.git
@@ -152,7 +159,7 @@ node --check src/static/app.js
 uv run python scripts/smoke_fetch.py 2026-08-02
 ```
 
-Environment variables: `SYNERGY_DATA_DIR` (saved data folder), `SYNERGY_BROWSER=chrome|msedge|chromium` (force the login browser), `SYNERGY_LOGIN_HEADLESS=1` (hide the login window; for automated checks only).
+Environment variables: `SYNERGY_DATA_DIR` (saved data folder), `SYNERGY_LOGIN_HEADLESS=1` (hide the login window; for automated checks only).
 
 ### Building the binaries
 
@@ -161,7 +168,7 @@ uv sync --group dev --no-editable --reinstall-package synergy-analyser
 uv run --no-sync pyinstaller --noconfirm synergy-battery-analyser.spec   # -> dist/
 ```
 
-The binary starts from `packaging/launcher.py` and bundles Playwright's driver, but no browser (see [About the Synergy login window](#about-the-synergy-login-window)). On macOS the spec builds `Synergy Battery Analyser.app` (no console, hidden from the Dock); elsewhere a single file with a console. Icons come from `packaging/icon/icon.svg`; `packaging/icon/build.sh` regenerates them. The [Release workflow](.github/workflows/release.yml) builds and smoke-tests Linux, Windows and macOS binaries. Run it manually for test builds, or push a `v*` tag to create a draft release.
+The binary starts from `packaging/launcher.py`. The login window ([pywebview](https://pywebview.flowrl.com/)) runs as a helper process: the same binary started with `--webview-host`. No browser is bundled; on Linux the binary also leaves GTK and WebKitGTK to the system rather than bundling copies. On macOS the spec builds `Synergy Battery Analyser.app` (no console, hidden from the Dock); elsewhere a single file with a console. Icons come from `packaging/icon/icon.svg`; `packaging/icon/build.sh` regenerates them. The [Release workflow](.github/workflows/release.yml) builds and smoke-tests Linux, Windows and macOS binaries. Run it manually for test builds, or push a `v*` tag to create a draft release.
 
 ## License
 

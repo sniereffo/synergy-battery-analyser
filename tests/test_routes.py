@@ -95,16 +95,8 @@ def _expected_rates(plan_id: str, rates_by_key: dict) -> dict:
     return {p["name"]: rates_by_key[p["key"]] for p in PLANS[plan_id]["periods"]}
 
 
-class FakePage:
-    def __init__(self, closed=False):
-        self.closed = closed
-
-    def is_closed(self):
-        return self.closed
-
-
 class FakeClient:
-    """Stand-in for SynergyBrowserClient (no browser)."""
+    """Stand-in for SynergyBrowserClient (no login window)."""
 
     def __init__(self, logged_in=True, intervals=None, range_error=None, services=None,
                  services_error=None, window_open=False):
@@ -635,14 +627,14 @@ def test_auth_status_handles_expired_session(client):
 
 def test_open_login_failure_returns_500_and_leaves_no_client(client, monkeypatch):
     async def broken_start(self):
-        raise RuntimeError("Executable doesn't exist at /fake/chromium")
+        raise RuntimeError("the login window didn't start (Namespace WebKit2 not available)")
 
     monkeypatch.setattr(SynergyBrowserClient, "start", broken_start)
     response = client.post("/api/auth/open-login")
     assert response.status_code == 500
     detail = response.json()["detail"]
-    assert "Executable doesn't exist" in detail
-    assert "Chrome or Edge" in detail and "uv run" not in detail
+    assert "WebKit2 not available" in detail
+    assert "login window" in detail and "uv run" not in detail
     assert app.state.synergy is None
     assert client.get("/api/auth/status").json()["logged_in"] is False
 
@@ -651,11 +643,11 @@ def test_open_login_replaces_stale_window_and_reset_clears(client, monkeypatch):
     closed = []
 
     async def fake_start(self):
-        self._page = FakePage()
+        self._window_open = True
 
     async def fake_close(self):
         closed.append(self)
-        self._page = None
+        self._window_open = False
 
     monkeypatch.setattr(SynergyBrowserClient, "start", fake_start)
     monkeypatch.setattr(SynergyBrowserClient, "close", fake_close)
