@@ -952,14 +952,14 @@ function renderSummary() {
     const cards = [
         { icon: 'plug-zap', label: 'Grid Import', value: `${s.total_consumption_kwh.toLocaleString()} kWh`, sub: `${s.num_days} days`, cls: 'neutral' },
         { icon: 'sun-medium', label: 'Grid Export', value: `${s.total_export_kwh.toLocaleString()} kWh`, sub: `earned ${fmtDollars(s.export_credits_dollars, { cents: true })} feed-in`, cls: 'positive' },
-        { icon: 'receipt', label: 'Net Cost (no battery)', value: fmtDollars(s.total_cost_without_battery_dollars, { cents: true }), sub: `after feed-in credits`, cls: 'negative' },
-        { icon: 'battery-charging', label: 'Net Cost (with battery)', value: fmtDollars(s.total_cost_with_battery_dollars, { cents: true }), sub: `save ${fmtDollars(s.period_savings_dollars, { cents: true })} over ${s.num_days} days`, cls: 'positive' },
-        { icon: 'piggy-bank', label: p.isProjection ? 'Annual Savings (projected)' : 'Annual Savings', value: annualValue, sub: annualSub, cls: p.annual > 0 ? 'positive' : 'neutral' },
-        { icon: 'calendar-clock', label: p.isProjection ? 'Payback (projected)' : 'Payback', value: paybackValue, sub: paybackSub, cls: s.payback_years ? 'positive' : 'neutral' },
+        { icon: 'receipt', label: 'No battery', title: 'Net cost without a battery', value: fmtDollars(s.total_cost_without_battery_dollars, { cents: true }), sub: `net cost, after feed-in credits`, cls: 'negative' },
+        { icon: 'battery-charging', label: 'With battery', title: 'Net cost with a battery', value: fmtDollars(s.total_cost_with_battery_dollars, { cents: true }), sub: `net cost, saving ${fmtDollars(s.period_savings_dollars, { cents: true })} over ${plural(s.num_days, 'day')}`, cls: 'positive' },
+        { icon: 'piggy-bank', label: 'Annual Savings', title: p.isProjection ? 'Projected to 12 months from a shorter range' : null, value: annualValue, sub: annualSub, cls: p.annual > 0 ? 'positive' : 'neutral' },
+        { icon: 'calendar-clock', label: 'Payback', title: p.isProjection ? 'Projected from a shorter range' : null, value: paybackValue, sub: paybackSub, cls: s.payback_years ? 'positive' : 'neutral' },
     ];
 
     document.getElementById('summaryGrid').replaceChildren(...cards.map(c =>
-        el('div', { class: `summary-card ${c.cls}` },
+        el('div', { class: `summary-card ${c.cls}`, title: c.title || null },
             el('div', { class: 'summary-label' }, icon(c.icon, { size: 15 }), el('span', {}, c.label)),
             el('div', { class: 'summary-value' }, c.value),
             el('div', { class: 'summary-sub' }, c.sub || ''),
@@ -1105,7 +1105,7 @@ function renderCostBreakdown() {
     });
 
     // Feed-in credits (negative), so the total is net like the summary's
-    // "Net Cost (no battery)".
+    // "No battery" net cost.
     if (hasCredits) {
         series.push({
             name: 'Feed-in credit',
