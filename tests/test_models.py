@@ -75,7 +75,7 @@ def test_plan_for_tariff_overrides_win():
 def test_plan_for_tariff_base_rates_replace_prefill():
     # e.g. rates scraped from Synergy's site for a tariff we can't re-bin.
     plan = plan_for_tariff(
-        "HOME BUSINESS PLAN K1", ["PEAK", "OFF_PEAK"],
+        "SOME NEW TOU PLAN", ["PEAK", "OFF_PEAK"],
         rate_overrides={"OFF_PEAK": 20.0},
         base_rates={"PEAK": 40.0, "OFF_PEAK": 25.0},
         base_supply_cents=150.0,

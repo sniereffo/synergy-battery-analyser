@@ -9,6 +9,7 @@ names; anything we can't map is left for the user to fill in the UI.
 """
 
 import re
+import time
 
 import httpx
 
@@ -25,9 +26,16 @@ _TARIFF_SLUGS = {
     "HOME PLAN A1": "Home-Plan-A1",
     "HOME PLAN (A1)": "Home-Plan-A1",
     "A1": "Home-Plan-A1",
-    "HOME BUSINESS PLAN K1": "Home-Business-Plan-K1-Resi",
-    "K1": "Home-Business-Plan-K1-Resi",
+    # Home Business Plan K1 is deliberately not auto-sourced: its page lists
+    # tiered/block rates whose labels don't map onto the portal's tariff-period
+    # columns, so parse_rates_html never recovers usable rates from it. K1
+    # users fill in their rates in the UI instead.
 }
+
+# Successful scrapes, keyed by slug: slug -> (time.monotonic() when fetched, parsed).
+# Failures are never cached, so a transient outage is retried on the next call.
+_CACHE_TTL_SECONDS = 6 * 60 * 60
+_rates_cache: dict[str, tuple[float, dict]] = {}
 
 
 def plan_slug_for_tariff(tariff_label: str | None) -> str | None:
@@ -95,11 +103,15 @@ async def fetch_plan_rates(tariff_label: str | None) -> dict | None:
     """Fetch and parse current rates for a tariff label, or None on any failure.
 
     Callers treat None as "no data" and fall back to prefill defaults; this
-    function never raises for network/parse issues.
+    function never raises for network/parse issues. Successful parses are
+    cached in memory per plan page for 6 hours. Returns a fresh copy each call.
     """
     slug = plan_slug_for_tariff(tariff_label)
     if not slug:
         return None
+    cached = _rates_cache.get(slug)
+    if cached and time.monotonic() - cached[0] < _CACHE_TTL_SECONDS:
+        return _copy(cached[1])
     try:
         async with httpx.AsyncClient(
             timeout=15.0, follow_redirects=True,
@@ -111,4 +123,12 @@ async def fetch_plan_rates(tariff_label: str | None) -> dict | None:
     except httpx.HTTPError:
         return None
     parsed = parse_rates_html(resp.text)
-    return parsed if parsed["rates"] else None
+    if not parsed["rates"]:
+        return None
+    _rates_cache[slug] = (time.monotonic(), parsed)
+    return _copy(parsed)
+
+
+def _copy(parsed: dict) -> dict:
+    """Shallow-copy a parsed result so callers can't mutate the cache."""
+    return {**parsed, "rates": dict(parsed["rates"])}
