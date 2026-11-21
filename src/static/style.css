@@ -1183,3 +1183,9 @@ input[type="number"] {
 :root.dark { --solar: #facc15; }
 .summary-card.solar::before { background: var(--solar); }
 .summary-card.solar .summary-label .icon { color: var(--solar); }
+
+/* Neutral cards (e.g. Grid Import): a visible slate accent, not the border grey. */
+:root { --neutral-accent: #64748b; }
+:root.dark { --neutral-accent: #94a3b8; }
+.summary-card.neutral::before { background: var(--neutral-accent); }
+.summary-card.neutral .summary-label .icon { color: var(--neutral-accent); }
