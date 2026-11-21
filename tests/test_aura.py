@@ -1,7 +1,14 @@
 import json
 from datetime import date
 
-from synergy_analyser.aura import build_chartdata_input, build_apex_action, build_ip_action
+import pytest
+
+from synergy_analyser.aura import (
+    build_apex_action,
+    build_chartdata_input,
+    build_ip_action,
+    parse_ip_result,
+)
 
 
 def test_build_chartdata_input_matches_captured_payload():
@@ -89,3 +96,40 @@ def test_build_apex_action_direct_controller():
     assert p["method"] == "getLinkedServices"
     assert p["params"] == {"contactId": None, "accountId": None}
     assert p["cacheable"] is False
+
+
+def test_parse_ip_result_unwraps_json_string_return_value():
+    inner = {"IPResult": {"ChartData": {"Response": []}}}
+    body = {"actions": [{"state": "SUCCESS",
+                         "returnValue": {"returnValue": json.dumps(inner)}}]}
+    assert parse_ip_result(body) == inner
+
+
+def test_parse_ip_result_direct_controller_return_value():
+    body = {"actions": [{"state": "SUCCESS", "returnValue": {"ActiveServices": []}}]}
+    assert parse_ip_result(body) == {"ActiveServices": []}
+
+
+@pytest.mark.parametrize("body", [{}, {"actions": []}, {"actions": None}])
+def test_parse_ip_result_no_actions_raises(body):
+    with pytest.raises(RuntimeError, match="no actions"):
+        parse_ip_result(body)
+
+
+def test_parse_ip_result_error_state_raises_with_error():
+    body = {"actions": [{"state": "ERROR", "error": [{"message": "Apex blew up"}]}]}
+    with pytest.raises(RuntimeError, match="Apex blew up"):
+        parse_ip_result(body)
+
+
+def test_parse_ip_result_truncates_huge_errors():
+    huge = "x" * 10_000
+    with pytest.raises(RuntimeError) as err:
+        parse_ip_result({"actions": [{"state": "ERROR", "error": [{"message": huge}]}]})
+    msg = str(err.value)
+    assert len(msg) < 400
+    assert msg.endswith("...[truncated]")
+
+    with pytest.raises(RuntimeError) as err:
+        parse_ip_result({"actions": [], "event": huge})
+    assert len(str(err.value)) < 400

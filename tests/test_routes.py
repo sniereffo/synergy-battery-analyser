@@ -1,13 +1,25 @@
 import json
+import time
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
-from synergy_analyser.main import app, DATA_DIR
+import synergy_analyser.main as main
+from synergy_analyser.browser_client import NotLoggedIn, SynergyBrowserClient
 from synergy_analyser.chartdata import parse_halfhourly_response
+from synergy_analyser.main import app
+from synergy_analyser.models import RATE_SCHEDULES
+from synergy_analyser.plans import PLAN_BY_TARIFF, PLANS, plan_periods
 
 FIXTURES = Path(__file__).parent / "fixtures"
+FIXTURE_DAY = date(2026, 8, 2)
+EV = "Electric Vehicle Add On"
+EV_SCHEDULE = RATE_SCHEDULES[EV]
+
+# Per-period kWh Synergy reported for the fixture day (see test_chartdata).
+FIXTURE_CONSUMPTION_KWH = 3.209 + 1.596 + 0.986 + 3.195 + 8.311
 
 
 @pytest.fixture()
@@ -15,6 +27,102 @@ def client():
     with TestClient(app) as c:
         yield c
 
+
+# --- helpers ---
+
+def _day_intervals(day: date = FIXTURE_DAY) -> list[dict]:
+    """The fixture day's 48 parsed intervals, moved onto `day`."""
+    raw = json.loads((FIXTURES / "chartdata_halfhourly_day.json").read_text())
+    shift = day - FIXTURE_DAY
+    return [{**i, "timestamp": i["timestamp"] + shift} for i in parse_halfhourly_response(raw)]
+
+
+def _write_cache(data_dir: Path, name: str, days: list[date], tariff_label="EV2 TARIFF") -> str:
+    """Write a cached-intervals file in the shape a live fetch produces."""
+    intervals = [iv for d in days for iv in _day_intervals(d)]
+    data_dir.mkdir(parents=True, exist_ok=True)
+    (data_dir / name).write_text(json.dumps({
+        "tariff_label": tariff_label,
+        "intervals": [{**i, "timestamp": i["timestamp"].isoformat()} for i in intervals],
+    }))
+    return name
+
+
+def _days(start: date, n: int) -> list[date]:
+    return [start + timedelta(days=k) for k in range(n)]
+
+
+def _poll_job(client, timeout=10.0):
+    """Poll the analysis job until it finishes; return the final job state."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        job = client.get("/api/analyse/progress").json()
+        if job["status"] in ("done", "error"):
+            return job
+        time.sleep(0.02)
+    raise AssertionError("job did not finish in time")
+
+
+def _run(client, **body) -> dict:
+    body.setdefault("battery_capacity_kwh", 15.0)
+    started = client.post("/api/analyse", json=body)
+    assert started.status_code == 200, started.text
+    return _poll_job(client)
+
+
+def _analyse(client, **body) -> dict:
+    job = _run(client, **body)
+    assert job["status"] == "done", job.get("error")
+    return job["result"]
+
+
+def _expected_rates(plan_id: str, rates_by_key: dict) -> dict:
+    """Plan rates keyed by period display name, as the result reports them."""
+    return {p["name"]: rates_by_key[p["key"]] for p in PLANS[plan_id]["periods"]}
+
+
+class FakePage:
+    def __init__(self, closed=False):
+        self.closed = closed
+
+    def is_closed(self):
+        return self.closed
+
+
+class FakeClient:
+    """Stand-in for SynergyBrowserClient (no browser)."""
+
+    def __init__(self, logged_in=True, intervals=None, range_error=None, services=None,
+                 services_error=None, window_open=False):
+        self.logged_in = logged_in
+        self.window_open = window_open
+        self._intervals = intervals or []
+        self._range_error = range_error
+        self._services = services or []
+        self._services_error = services_error
+        self.range_calls = []
+        self.finalize_calls = 0
+        self.closed = False
+
+    async def get_range(self, service_id, start, end, progress=None):
+        self.range_calls.append((service_id, start, end))
+        if self._range_error:
+            raise self._range_error
+        return self._intervals
+
+    async def get_services(self):
+        if self._services_error:
+            raise self._services_error
+        return self._services
+
+    async def finalize_login(self):
+        self.finalize_calls += 1
+
+    async def close(self):
+        self.closed = True
+
+
+# --- basic routes ---
 
 def test_health_endpoint(client):
     response = client.get("/api/health")
@@ -24,119 +132,481 @@ def test_health_endpoint(client):
 
 def test_rate_schedules_endpoint(client):
     data = client.get("/api/rate-schedules").json()
-    assert "EV2 TARIFF" in data
-    assert data["EV2 TARIFF"]["rates"]["PEAK"] == 53.8446
+    # Keyed by plan id...
+    for plan_id in PLANS:
+        assert data[plan_id] == RATE_SCHEDULES[plan_id]
+    # ...plus the tariff-label aliases the frontend looks up.
+    assert data["EV2 TARIFF"]["rates"]["PEAK"] == 55.3253
+    assert data["EV2 TARIFF"] == data[EV]
+
+
+def test_plans_endpoint_details(client):
+    data = client.get("/api/plans", params={"tariff": "EV2 TARIFF"}).json()
+    assert data["plans"] == list(PLANS)
+    assert data["default"] == EV
+    assert data["details"]["Home Plan A1"] == {
+        "periods": [{"name": "Anytime", "key": "PEAK"}], "flat": True,
+    }
+    assert data["details"][EV]["flat"] is False
+    assert {p["key"] for p in data["details"][EV]["periods"]} == {
+        "PEAK", "OFF_PEAK", "OFF_PEAK(AM)", "OVERNIGHT", "SUPER_OFFPEAK",
+    }
+    assert client.get("/api/plans", params={"tariff": "MYSTERY"}).json()["default"] is None
+
+
+def test_data_files_empty_when_no_data_dir(client, data_dir):
+    assert not data_dir.exists()
+    assert client.get("/api/data/files").json() == []
+
+
+def test_data_files_lists_metadata_sorted(client, data_dir):
+    # Aug 1 and Aug 3 only: start/end span the file, days counts distinct dates.
+    _write_cache(data_dir, "b_2026-08-01_to_2026-08-03.json",
+                 [date(2026, 8, 1), date(2026, 8, 3)], tariff_label="EV2 TARIFF")
+    _write_cache(data_dir, "c_single.json", [FIXTURE_DAY], tariff_label="MIDDAY SAVER")
+    (data_dir / "a_broken.json").write_text("not json")
+    (data_dir / "notes.txt").write_text("ignored")
+
+    files = client.get("/api/data/files").json()
+    assert files == [
+        {"name": "a_broken.json", "tariff_label": None, "start": None, "end": None, "days": 0},
+        {"name": "b_2026-08-01_to_2026-08-03.json", "tariff_label": "EV2 TARIFF",
+         "start": "2026-08-01", "end": "2026-08-03", "days": 2},
+        {"name": "c_single.json", "tariff_label": "MIDDAY SAVER",
+         "start": "2026-08-02", "end": "2026-08-02", "days": 1},
+    ]
+
+
+def test_analyse_validates_date_range(client):
+    response = client.post("/api/analyse", json={
+        "start_date": "2026-08-02", "end_date": "2026-08-01", "battery_capacity_kwh": 15.0,
+    })
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize("eff", [0, -0.1, 1.5])
+def test_analyse_validates_round_trip_efficiency(client, eff):
+    response = client.post("/api/analyse", json={
+        "cached_file": "x.json", "battery_capacity_kwh": 15.0, "round_trip_efficiency": eff,
+    })
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize("dates", [
+    {},
+    {"start_date": "2026-08-01"},
+    {"end_date": "2026-08-01"},
+])
+def test_live_fetch_requires_both_dates(client, dates):
+    response = client.post("/api/analyse", json={
+        "service_id": "001X", "battery_capacity_kwh": 15.0, **dates,
+    })
+    assert response.status_code == 400
+    assert client.get("/api/analyse/progress").json()["status"] == "idle"
+
+
+# --- cached-file analysis: plan selection + rates ---
+
+def test_analyse_from_cached_file_uses_datas_own_plan(client, data_dir):
+    name = _write_cache(data_dir, "day.json", [FIXTURE_DAY])
+    data = _analyse(client, cached_file=name)  # no plan_id, no dates, no overrides
+
+    # EV2 tariff projects onto the EV Add On plan, priced from the built-in rates.
+    plan = data["plan"]
+    assert plan["id"] == plan["name"] == EV
+    assert plan["periods"] == plan_periods(EV)
+    assert plan["rates"] == _expected_rates(EV, EV_SCHEDULE["rates"])
+    assert plan["supply_charge_cents"] == EV_SCHEDULE["supply_charge_cents"]
+    assert plan["rates_source"] == "default"
+
+    summary = data["summary"]
+    assert len(data["intervals"]) == 48
+    assert round(summary["total_consumption_kwh"], 2) == round(FIXTURE_CONSUMPTION_KWH, 2)
+    assert summary["total_export_kwh"] == 15.81
+    assert summary["num_days"] == 1
+    assert summary["data_start"] == summary["data_end"] == "2026-08-02"
+    assert summary["supply_cost_dollars"] == round(EV_SCHEDULE["supply_charge_cents"] / 100, 2)
+    assert data["warnings"] == []
+    assert data["cache_file"] == name
+
+    # Per-interval feed-in credits sum to the summary's export credits, so the
+    # Cost Breakdown chart's net total matches "Net Cost (no battery)".
+    credits = sum(i["export_credit_cents"] for i in data["intervals"])
+    assert round(credits / 100, 2) == summary["export_credits_dollars"]
+
+
+def test_cached_files_tariff_label_wins_over_request_label(client, data_dir):
+    name = _write_cache(data_dir, "day.json", [FIXTURE_DAY], tariff_label="EV2 TARIFF")
+    data = _analyse(client, cached_file=name, tariff_label="HOME PLAN A1")
+    assert data["plan"]["id"] == EV
+
+
+@pytest.mark.parametrize("plan_id", list(PLANS))
+def test_every_plan_prices_from_builtin_rates_without_overrides(client, data_dir, plan_id):
+    """With no overrides and no live scrape, every plan must price from its
+    built-in schedule — never silently at 0c (the old EV fallback bug)."""
+    name = _write_cache(data_dir, "day.json", [FIXTURE_DAY])
+    data = _analyse(client, cached_file=name, plan_id=plan_id)
+
+    schedule = RATE_SCHEDULES[plan_id]
+    plan = data["plan"]
+    assert plan["id"] == plan_id
+    assert plan["rates"] == _expected_rates(plan_id, schedule["rates"])
+    assert all(rate > 0 for rate in plan["rates"].values())
+    assert plan["supply_charge_cents"] == schedule["supply_charge_cents"]
+    assert plan["rates_source"] == "default"
+    assert not [w for w in data["warnings"] if w.startswith("No rate")]
+    # Every interval carries a non-zero rate from the plan.
+    assert all(iv["rate_cents"] > 0 for iv in data["intervals"])
+
+
+@pytest.mark.parametrize("label,plan_id", sorted(PLAN_BY_TARIFF.items()))
+def test_null_plan_id_defaults_to_plan_for_data_label(client, data_dir, label, plan_id):
+    name = _write_cache(data_dir, "day.json", [FIXTURE_DAY], tariff_label=label)
+    data = _analyse(client, cached_file=name, plan_id=None)
+    assert data["plan"]["id"] == plan_id
+    assert data["plan"]["rates"] == _expected_rates(plan_id, RATE_SCHEDULES[plan_id]["rates"])
+
+
+def test_scraped_rates_layer_over_builtin_schedule(client, data_dir, monkeypatch):
+    seen = []
+
+    async def scraped(tariff_label):
+        seen.append(tariff_label)
+        # A partial scrape: only PEAK parsed, plus a supply charge.
+        return {"rates": {"PEAK": 60.0}, "supply_charge_cents": 140.0}
+
+    monkeypatch.setattr(main, "fetch_plan_rates", scraped)
+    name = _write_cache(data_dir, "day.json", [FIXTURE_DAY])
+    plan = _analyse(client, cached_file=name)["plan"]
+
+    assert seen == [EV]
+    assert plan["rates"] == _expected_rates(EV, {**EV_SCHEDULE["rates"], "PEAK": 60.0})
+    assert plan["supply_charge_cents"] == 140.0
+    assert plan["rates_source"] == "synergy"
+
+
+def test_partial_rate_override_keeps_other_rates(client, data_dir):
+    name = _write_cache(data_dir, "day.json", [FIXTURE_DAY])
+    plan = _analyse(client, cached_file=name, rate_overrides={"PEAK": 70.0})["plan"]
+    assert plan["rates"] == _expected_rates(EV, {**EV_SCHEDULE["rates"], "PEAK": 70.0})
+    assert plan["rates_source"] == "default"
+
+
+def test_full_override_skips_live_scrape(client, data_dir, monkeypatch):
+    calls = []
+
+    async def scraped(tariff_label):
+        calls.append(tariff_label)
+        return None
+
+    monkeypatch.setattr(main, "fetch_plan_rates", scraped)
+    overrides = {"PEAK": 50.0, "OFF_PEAK": 20.0, "OFF_PEAK(AM)": 21.0,
+                 "OVERNIGHT": 15.0, "SUPER_OFFPEAK": 5.0}
+    name = _write_cache(data_dir, "day.json", [FIXTURE_DAY])
+    data = _analyse(client, cached_file=name, rate_overrides=overrides, supply_charge_cents=100.0)
+
+    assert calls == []
+    assert data["plan"]["rates"] == _expected_rates(EV, overrides)
+    assert data["plan"]["supply_charge_cents"] == 100.0
+    assert data["plan"]["rates_source"] == "override"
+
+
+def test_zero_rate_period_with_consumption_warns(client, data_dir):
+    name = _write_cache(data_dir, "day.json", [FIXTURE_DAY])
+    data = _analyse(client, cached_file=name, rate_overrides={"OVERNIGHT": 0.0})
+    # Overnight on the fixture day = 3.195 kWh.
+    assert data["warnings"] == ["No rate for 'Overnight' — 3.2 kWh priced at 0c"]
+
+
+def test_explicit_plan_projects_alternate_plan(client, data_dir):
+    name = _write_cache(data_dir, "day.json", [FIXTURE_DAY])
+    data = _analyse(client, cached_file=name, plan_id="Midday Saver")
+    plan = data["plan"]
+    assert plan["name"] == "Midday Saver"
+    # Midday Saver has only three periods; every slot is re-binned into them.
+    assert set(plan["rates"]) == {"Peak", "Super Off Peak", "Off Peak"}
+    assert {iv["tariff_name"] for iv in data["intervals"]} == set(plan["rates"])
+
+
+def test_plan_id_accepts_case_insensitive_name(client, data_dir):
+    name = _write_cache(data_dir, "day.json", [FIXTURE_DAY])
+    assert _analyse(client, cached_file=name, plan_id="midday saver")["plan"]["id"] == "Midday Saver"
+
+
+def test_unknown_plan_id_is_job_error(client, data_dir):
+    name = _write_cache(data_dir, "day.json", [FIXTURE_DAY])
+    job = _run(client, cached_file=name, plan_id="No Such Plan")
+    assert job["status"] == "error"
+    assert "Unknown plan" in job["error"]
+    assert job["error_code"] is None
+
+
+def test_unknown_tariff_falls_back_to_data_periods(client, data_dir):
+    name = _write_cache(data_dir, "day.json", [FIXTURE_DAY], tariff_label="MYSTERY TARIFF")
+    data = _analyse(client, cached_file=name, rate_overrides={"PEAK": 50.0})
+
+    plan = data["plan"]
+    assert plan["periods"] == []
+    assert plan["name"] == "MYSTERY TARIFF"
+    # Periods as Synergy labelled them; only the overridden one has a rate.
+    assert plan["rates"] == {
+        "Peak": 50.0, "Off Peak": 0.0, "Off Peak (AM)": 0.0,
+        "Overnight": 0.0, "Super Off Peak": 0.0,
+    }
+    warnings = data["warnings"]
+    assert any("doesn't match a known plan" in w for w in warnings)
+    assert "No rate for 'Overnight' — 3.2 kWh priced at 0c" in warnings
+    assert "No rate for 'Super Off Peak' — 8.3 kWh priced at 0c" in warnings
+    assert not any(w.startswith("No rate for 'Peak'") for w in warnings)
+
+
+# --- cached-file analysis: num_days / date filtering ---
+
+JULY = _days(date(2026, 7, 1), 30)  # 2026-07-01 .. 2026-07-30
+
+
+def _payback_from(summary, battery_cost):
+    return battery_cost / (summary["period_savings_dollars"] / summary["num_days"] * 365)
+
+
+def test_num_days_and_payback_follow_the_data_not_the_request(client, data_dir):
+    name = _write_cache(data_dir, "july.json", JULY)
+    supply = EV_SCHEDULE["supply_charge_cents"]
+    common = {"cached_file": name, "battery_cost_dollars": 10000.0}
+
+    whole = _analyse(client, **common)
+    s = whole["summary"]
+    assert s["num_days"] == 30
+    assert (s["data_start"], s["data_end"]) == ("2026-07-01", "2026-07-30")
+    assert s["supply_cost_dollars"] == round(30 * supply / 100, 2)
+    assert s["payback_years"] is not None
+    assert s["payback_years"] == pytest.approx(_payback_from(s, 10000.0), abs=0.06)
+    assert whole["warnings"] == []
+
+    # A year-long request around 30 days of data must not change anything but
+    # add a warning: supply and payback are annualised from the 30 data days.
+    year = _analyse(client, **common, start_date="2026-01-01", end_date="2026-12-31")
+    assert year["summary"] == s
+    assert len(year["warnings"]) == 1
+    assert "only covers 2026-07-01 to 2026-07-30" in year["warnings"][0]
+
+    # A 7-day filter narrows the data itself.
+    week = _analyse(client, **common, start_date="2026-07-10", end_date="2026-07-16")
+    w = week["summary"]
+    assert w["num_days"] == 7
+    assert (w["data_start"], w["data_end"]) == ("2026-07-10", "2026-07-16")
+    assert len(week["intervals"]) == 7 * 48
+    assert w["supply_cost_dollars"] == round(7 * supply / 100, 2)
+    assert w["payback_years"] == pytest.approx(_payback_from(w, 10000.0), abs=0.06)
+    # Every day is identical usage, so a week annualises to (nearly) the same
+    # payback as the month — not 30/7 or 365/7 times off.
+    assert w["payback_years"] == pytest.approx(s["payback_years"], rel=0.05)
+    assert week["warnings"] == []
+
+
+def test_num_days_counts_distinct_dates_and_warns_on_gaps(client, data_dir):
+    days = [date(2026, 8, 1), date(2026, 8, 2), date(2026, 8, 5)]
+    name = _write_cache(data_dir, "gappy.json", days)
+    data = _analyse(client, cached_file=name)
+    s = data["summary"]
+    assert s["num_days"] == 3
+    assert (s["data_start"], s["data_end"]) == ("2026-08-01", "2026-08-05")
+    assert s["supply_cost_dollars"] == round(3 * EV_SCHEDULE["supply_charge_cents"] / 100, 2)
+    assert len(data["warnings"]) == 1
+    assert "gaps" in data["warnings"][0]
+    assert "3 of the 5 days" in data["warnings"][0]
+
+
+def test_cached_filter_outside_data_is_error(client, data_dir):
+    name = _write_cache(data_dir, "july.json", JULY)
+    job = _run(client, cached_file=name, start_date="2025-01-01", end_date="2025-01-07")
+    assert job["status"] == "error"
+    assert "2026-07-01 to 2026-07-30" in job["error"]
+
+
+def test_cached_filter_partial_overlap_warns(client, data_dir):
+    name = _write_cache(data_dir, "july.json", JULY)
+    data = _analyse(client, cached_file=name, start_date="2026-06-25", end_date="2026-07-03")
+    assert data["summary"]["num_days"] == 3
+    assert data["summary"]["data_start"] == "2026-07-01"
+    assert len(data["warnings"]) == 1
+    assert "only covers" in data["warnings"][0]
+
+
+def test_cached_single_bound_is_open_ended(client, data_dir):
+    name = _write_cache(data_dir, "july.json", JULY)
+    data = _analyse(client, cached_file=name, start_date="2026-07-28")
+    assert data["summary"]["num_days"] == 3
+    assert data["summary"]["data_end"] == "2026-07-30"
+
+
+def test_missing_cached_file_is_job_error(client):
+    job = _run(client, cached_file="nope.json")
+    assert job["status"] == "error"
+    assert "not found" in job["error"]
+
+
+def test_malformed_cached_file_is_job_error(client, data_dir):
+    data_dir.mkdir()
+    (data_dir / "bad.json").write_text('{"intervals": [{"timestamp": "yesterday"}]}')
+    job = _run(client, cached_file="bad.json")
+    assert job["status"] == "error"
+    assert "unreadable" in job["error"]
+
+
+# --- live fetch + auth ---
+
+def test_analyse_without_login_reports_not_logged_in(client):
+    job = _run(client, service_id="001X", start_date="2026-08-02", end_date="2026-08-02")
+    assert job["status"] == "error"
+    assert "logged in" in job["error"].lower()
+    assert job["error_code"] == "not_logged_in"
+
+
+def test_live_fetch_session_expiry_sets_not_logged_in(client):
+    fake = FakeClient(range_error=NotLoggedIn("Synergy session rejected (HTTP 401)"))
+    app.state.synergy = fake
+    app.state.services = [{"service_id": "001X", "tariff": "EV2 TARIFF"}]
+    app.state.login_finalized = True
+
+    job = _run(client, service_id="001X", start_date="2026-08-02", end_date="2026-08-02")
+    assert job["status"] == "error"
+    assert job["error_code"] == "not_logged_in"
+    assert "log in again" in job["error"]
+    # Per-login state is forgotten so the UI can start a fresh login.
+    assert app.state.services == []
+    assert app.state.login_finalized is False
+
+
+def test_other_job_errors_have_no_error_code(client):
+    app.state.synergy = FakeClient(range_error=RuntimeError("Aura call failed: HTTP 500"))
+    job = _run(client, service_id="001X", start_date="2026-08-02", end_date="2026-08-02")
+    assert job["status"] == "error"
+    assert "HTTP 500" in job["error"]
+    assert job["error_code"] is None
+
+
+def test_live_fetch_caches_in_data_dir_and_warns_on_short_data(client, data_dir):
+    sid = "../001X"  # unsafe characters are stripped from the cache file name
+    fake = FakeClient(intervals=_day_intervals(FIXTURE_DAY))
+    app.state.synergy = fake
+    app.state.services = [{"service_id": sid, "tariff": "EV2 TARIFF"}]
+
+    data = _analyse(client, service_id=sid, start_date="2026-08-01", end_date="2026-08-03")
+
+    assert fake.range_calls == [(sid, date(2026, 8, 1), date(2026, 8, 3))]
+    # Tariff comes from the selected service -> EV plan.
+    assert data["plan"]["id"] == EV
+    assert data["summary"]["num_days"] == 1
+    assert len(data["warnings"]) == 1
+    assert "only 1 of the 3 requested days" in data["warnings"][0]
+
+    cache = data_dir / "2026-08-01_to_2026-08-03_001X.json"
+    assert [p.name for p in data_dir.iterdir()] == [cache.name]
+    assert data["cache_file"] == cache.name  # frontend re-runs against this file
+    payload = json.loads(cache.read_text())
+    assert payload["tariff_label"] == "EV2 TARIFF"
+    assert payload["service_id"] == sid
+    assert len(payload["intervals"]) == 48
+
+
+def test_live_fetch_with_no_data_is_error_and_not_cached(client, data_dir):
+    app.state.synergy = FakeClient(intervals=[])
+    job = _run(client, service_id="001X", start_date="2026-08-01", end_date="2026-08-03")
+    assert job["status"] == "error"
+    assert "no interval data" in job["error"]
+    assert not data_dir.exists() or not any(data_dir.iterdir())
 
 
 def test_auth_status_when_not_logged_in(client):
     data = client.get("/api/auth/status").json()
-    assert data == {"logged_in": False, "services": []}
+    assert data == {"logged_in": False, "services": [], "browser_open": False}
 
 
-def test_analyse_validates_date_range(client):
-    response = client.post(
-        "/api/analyse",
-        json={
-            "start_date": "2026-08-02",
-            "end_date": "2026-08-01",
-            "battery_capacity_kwh": 15.0,
-        },
-    )
-    assert response.status_code == 422
+def test_auth_status_reports_open_login_window(client):
+    app.state.synergy = FakeClient(logged_in=False, window_open=True)
+    assert client.get("/api/auth/status").json()["browser_open"] is True
+    app.state.synergy.window_open = False  # user closed the window
+    assert client.get("/api/auth/status").json()["browser_open"] is False
 
 
-def _poll_job(client, timeout=10.0):
-    """Poll the analysis job until it finishes; return the final job state."""
-    import time
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        job = client.get("/api/analyse/progress").json()
-        if job["status"] in ("done", "error"):
-            return job
-        time.sleep(0.05)
-    raise AssertionError("job did not finish in time")
+def test_auth_status_logged_in_fetches_services_and_finalizes_once(client):
+    services = [{"service_id": "001X", "tariff": "EV2 TARIFF"}]
+    fake = FakeClient(services=services)
+    app.state.synergy = fake
+    for _ in range(2):
+        data = client.get("/api/auth/status").json()
+        assert data == {"logged_in": True, "services": services, "browser_open": False}
+    assert fake.finalize_calls == 1
 
 
-def test_analyse_without_login_reports_error(client):
-    started = client.post(
-        "/api/analyse",
-        json={
-            "service_id": "001X",
-            "start_date": "2026-08-02",
-            "end_date": "2026-08-02",
-            "battery_capacity_kwh": 15.0,
-        },
-    )
-    assert started.status_code == 200
-    job = _poll_job(client)
-    assert job["status"] == "error"
-    assert "logged in" in job["error"].lower()
+def test_auth_status_handles_expired_session(client):
+    app.state.synergy = FakeClient(services_error=NotLoggedIn("expired"))
+    data = client.get("/api/auth/status").json()
+    assert data["logged_in"] is False
+    assert data["services"] == []
 
 
-def test_analyse_from_cached_file(client, tmp_path, monkeypatch):
-    # Write a cached intervals file in the shape the live fetch would produce.
-    raw = json.loads((FIXTURES / "chartdata_halfhourly_day.json").read_text())
-    intervals = parse_halfhourly_response(raw)
-    payload = {
-        "tariff_label": "EV2 TARIFF",
-        "intervals": [{**i, "timestamp": i["timestamp"].isoformat()} for i in intervals],
+def test_open_login_failure_returns_500_and_leaves_no_client(client, monkeypatch):
+    async def broken_start(self):
+        raise RuntimeError("Executable doesn't exist at /fake/chromium")
+
+    monkeypatch.setattr(SynergyBrowserClient, "start", broken_start)
+    response = client.post("/api/auth/open-login")
+    assert response.status_code == 500
+    detail = response.json()["detail"]
+    assert "Executable doesn't exist" in detail
+    assert "uv run playwright install chromium" in detail
+    assert app.state.synergy is None
+    assert client.get("/api/auth/status").json()["logged_in"] is False
+
+
+def test_open_login_replaces_stale_window_and_reset_clears(client, monkeypatch):
+    closed = []
+
+    async def fake_start(self):
+        self._page = FakePage()
+
+    async def fake_close(self):
+        closed.append(self)
+        self._page = None
+
+    monkeypatch.setattr(SynergyBrowserClient, "start", fake_start)
+    monkeypatch.setattr(SynergyBrowserClient, "close", fake_close)
+
+    assert client.post("/api/auth/open-login").json() == {"status": "browser_opened"}
+    first = app.state.synergy
+    assert isinstance(first, SynergyBrowserClient)
+    assert client.get("/api/auth/status").json()["browser_open"] is True
+
+    # Not logged in yet (e.g. the user closed the window): a second click
+    # discards the stale client and starts a fresh one.
+    assert client.post("/api/auth/open-login").json() == {"status": "browser_opened"}
+    second = app.state.synergy
+    assert second is not first
+    assert closed == [first]
+
+    app.state.services = [{"service_id": "001X"}]
+    app.state.login_finalized = True
+    assert client.post("/api/auth/reset").json() == {"status": "reset"}
+    assert app.state.synergy is None
+    assert app.state.services == []
+    assert app.state.login_finalized is False
+    assert closed == [first, second]
+    assert client.get("/api/auth/status").json() == {
+        "logged_in": False, "services": [], "browser_open": False,
     }
-    DATA_DIR.mkdir(exist_ok=True)
-    cache = DATA_DIR / "2026-08-02_to_2026-08-02.json"
-    cache.write_text(json.dumps(payload))
-    try:
-        started = client.post(
-            "/api/analyse",
-            json={
-                "start_date": "2026-08-02",
-                "end_date": "2026-08-02",
-                "battery_capacity_kwh": 15.0,
-                "cached_file": cache.name,
-                "rate_overrides": {"PEAK": 53.8446},
-            },
-        )
-        assert started.status_code == 200
-        job = _poll_job(client)
-        assert job["status"] == "done", job.get("error")
-        data = job["result"]
-        # EV2 tariff projects onto the EV Add On plan by default.
-        assert data["plan"]["name"] == "Electric Vehicle Add On"
-        assert len(data["intervals"]) == 48
-        # Consumption total for 2 Aug = sum of the per-period buckets.
-        assert round(data["summary"]["total_consumption_kwh"], 2) == round(
-            3.209 + 1.596 + 0.986 + 3.195 + 8.311, 2
-        )
-        assert data["summary"]["total_export_kwh"] == 15.81
-        # Explicit override flows through (keyed by API column, shown by name).
-        assert data["plan"]["rates"]["Peak"] == 53.8446
-    finally:
-        cache.unlink(missing_ok=True)
 
 
-def test_analyse_projects_alternate_plan(client):
-    import json as _json
-    raw = _json.loads((FIXTURES / "chartdata_halfhourly_day.json").read_text())
-    intervals = parse_halfhourly_response(raw)
-    payload = {
-        "tariff_label": "EV2 TARIFF",
-        "intervals": [{**i, "timestamp": i["timestamp"].isoformat()} for i in intervals],
-    }
-    DATA_DIR.mkdir(exist_ok=True)
-    cache = DATA_DIR / "2026-08-02_to_2026-08-02.json"
-    cache.write_text(_json.dumps(payload))
-    try:
-        started = client.post("/api/analyse", json={
-            "start_date": "2026-08-02", "end_date": "2026-08-02",
-            "battery_capacity_kwh": 15.0, "cached_file": cache.name,
-            "plan_id": "Midday Saver",
-            "rate_overrides": {"PEAK": 55.0, "SUPER_OFFPEAK": 8.0, "OFF_PEAK": 24.0},
-        })
-        assert started.status_code == 200
-        job = _poll_job(client)
-        assert job["status"] == "done", job.get("error")
-        data = job["result"]
-        assert data["plan"]["name"] == "Midday Saver"
-        # Midday Saver has only three periods.
-        assert set(data["plan"]["rates"]) <= {"Peak", "Super Off Peak", "Off Peak"}
-    finally:
-        cache.unlink(missing_ok=True)
+def test_open_login_when_already_logged_in_keeps_client(client):
+    fake = FakeClient(logged_in=True)
+    app.state.synergy = fake
+    assert client.post("/api/auth/open-login").json() == {"status": "logged_in"}
+    assert app.state.synergy is fake
+    assert fake.closed is False
+
+
+def test_reset_without_client(client):
+    assert client.post("/api/auth/reset").json() == {"status": "reset"}
+    assert app.state.synergy is None

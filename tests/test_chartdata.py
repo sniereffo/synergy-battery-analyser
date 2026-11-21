@@ -2,7 +2,13 @@ import json
 from pathlib import Path
 from datetime import datetime
 
-from synergy_analyser.chartdata import parse_halfhourly_response, apply_rates
+import pytest
+
+from synergy_analyser.chartdata import (
+    apply_rates,
+    parse_halfhourly_response,
+    unpriced_consumption,
+)
 
 FIX = Path(__file__).parent / "fixtures"
 HALF = json.loads((FIX / "chartdata_halfhourly_day.json").read_text())
@@ -78,3 +84,48 @@ def test_apply_rates_reports_unknown_periods():
     overnight = priced[0]
     assert overnight["rate_cents"] == 0.0
     assert overnight["cost_cents"] == 0.0
+
+
+@pytest.mark.parametrize("payload", [
+    {},
+    {"ChartData": {}},
+    {"ChartData": {"Devices": ["0"]}},
+    {"IPResult": {}},
+    {"IPResult": {"ChartData": {"Response": None}}},
+    {"IPResult": "no data", "ChartData": None},
+])
+def test_payload_without_response_is_zero_intervals(payload):
+    # e.g. a range before the move-in date: no data, not an error.
+    assert parse_halfhourly_response(payload) == []
+
+
+@pytest.mark.parametrize("payload", [
+    None,
+    "oops",
+    ["rows"],
+    {"ChartData": {"Response": "not a list"}},
+])
+def test_malformed_payload_raises(payload):
+    with pytest.raises(ValueError):
+        parse_halfhourly_response(payload)
+
+
+def test_unpriced_consumption_reports_zero_and_missing_rates():
+    intervals = parse_halfhourly_response(HALF)
+    rates = {"PEAK": 50.0, "OFF_PEAK": 0.0, "OFF_PEAK(AM)": 20.0, "SUPER_OFFPEAK": 8.0}
+    priced = apply_rates(intervals, rates)
+    unpriced = unpriced_consumption(priced, rates)
+    assert set(unpriced) == {"OFF_PEAK", "OVERNIGHT"}
+    assert round(unpriced["OFF_PEAK"], 3) == 1.596
+    assert round(unpriced["OVERNIGHT"], 3) == 3.195
+
+
+def test_unpriced_consumption_ignores_periods_without_usage():
+    intervals = [
+        {"timestamp": datetime(2026, 8, 2, 0, 0), "consumption_kwh": 0.0,
+         "export_kwh": 1.0, "tariff_name": "OVERNIGHT"},
+    ]
+    assert unpriced_consumption(intervals, {}) == {}
+    assert unpriced_consumption(parse_halfhourly_response(HALF), {
+        "PEAK": 1.0, "OFF_PEAK": 1.0, "OFF_PEAK(AM)": 1.0, "OVERNIGHT": 1.0, "SUPER_OFFPEAK": 1.0,
+    }) == {}

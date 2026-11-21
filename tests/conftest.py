@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+import synergy_analyser.main as main
 from synergy_analyser.chartdata import parse_halfhourly_response, apply_rates
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -15,6 +16,27 @@ TEST_RATES = {
     "OVERNIGHT": 19.3841,
     "SUPER_OFFPEAK": 8.6151,
 }
+
+
+@pytest.fixture(autouse=True)
+def data_dir(tmp_path, monkeypatch):
+    """Keep every test offline and away from the real ./data directory.
+
+    - main.DATA_DIR points at a per-test temp dir (cache reads/writes land there).
+    - main.fetch_plan_rates (a live scrape of synergy.net.au) returns None, so the
+      built-in rate schedules are used. Tests that want scraped rates patch it
+      again themselves.
+
+    Returns the temp data dir (not created until something writes to it).
+    """
+    path = tmp_path / "data"
+    monkeypatch.setattr(main, "DATA_DIR", path)
+
+    async def no_rates(tariff_label):
+        return None
+
+    monkeypatch.setattr(main, "fetch_plan_rates", no_rates)
+    return path
 
 
 @pytest.fixture
