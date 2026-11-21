@@ -37,9 +37,11 @@ def _day_intervals(day: date = FIXTURE_DAY) -> list[dict]:
     return [{**i, "timestamp": i["timestamp"] + shift} for i in parse_halfhourly_response(raw)]
 
 
-def _write_cache(data_dir: Path, name: str, days: list[date], tariff_label="EV2 TARIFF") -> str:
+def _write_cache(data_dir: Path, name: str, days: list[date], tariff_label="EV2 TARIFF",
+                 intervals: list[dict] | None = None) -> str:
     """Write a cached-intervals file in the shape a live fetch produces."""
-    intervals = [iv for d in days for iv in _day_intervals(d)]
+    if intervals is None:
+        intervals = [iv for d in days for iv in _day_intervals(d)]
     data_dir.mkdir(parents=True, exist_ok=True)
     (data_dir / name).write_text(json.dumps({
         "tariff_label": tariff_label,
@@ -50,6 +52,18 @@ def _write_cache(data_dir: Path, name: str, days: list[date], tariff_label="EV2 
 
 def _days(start: date, n: int) -> list[date]:
     return [start + timedelta(days=k) for k in range(n)]
+
+
+PROJECTION_PREFIX = "Savings and payback are projected to 12 months"
+
+
+def _projection_warnings(data) -> list[str]:
+    return [w for w in data["warnings"] if w.startswith(PROJECTION_PREFIX)]
+
+
+def _other_warnings(data) -> list[str]:
+    """Warnings other than the short-range 12-month projection caveat."""
+    return [w for w in data["warnings"] if not w.startswith(PROJECTION_PREFIX)]
 
 
 def _poll_job(client, timeout=10.0):
@@ -101,6 +115,7 @@ class FakeClient:
         self._services = services or []
         self._services_error = services_error
         self.range_calls = []
+        self.services_calls = 0
         self.finalize_calls = 0
         self.closed = False
 
@@ -111,6 +126,7 @@ class FakeClient:
         return self._intervals
 
     async def get_services(self):
+        self.services_calls += 1
         if self._services_error:
             raise self._services_error
         return self._services
@@ -226,7 +242,8 @@ def test_analyse_from_cached_file_uses_datas_own_plan(client, data_dir):
     assert summary["num_days"] == 1
     assert summary["data_start"] == summary["data_end"] == "2026-08-02"
     assert summary["supply_cost_dollars"] == round(EV_SCHEDULE["supply_charge_cents"] / 100, 2)
-    assert data["warnings"] == []
+    assert _other_warnings(data) == []
+    assert len(_projection_warnings(data)) == 1  # one day of data
     assert data["cache_file"] == name
 
     # Per-interval feed-in credits sum to the summary's export credits, so the
@@ -316,7 +333,7 @@ def test_zero_rate_period_with_consumption_warns(client, data_dir):
     name = _write_cache(data_dir, "day.json", [FIXTURE_DAY])
     data = _analyse(client, cached_file=name, rate_overrides={"OVERNIGHT": 0.0})
     # Overnight on the fixture day = 3.195 kWh.
-    assert data["warnings"] == ["No rate for 'Overnight' — 3.2 kWh priced at 0c"]
+    assert _other_warnings(data) == ["No rate for 'Overnight' — 3.2 kWh priced at 0c"]
 
 
 def test_explicit_plan_projects_alternate_plan(client, data_dir):
@@ -382,14 +399,14 @@ def test_num_days_and_payback_follow_the_data_not_the_request(client, data_dir):
     assert s["supply_cost_dollars"] == round(30 * supply / 100, 2)
     assert s["payback_years"] is not None
     assert s["payback_years"] == pytest.approx(_payback_from(s, 10000.0), abs=0.06)
-    assert whole["warnings"] == []
+    assert _other_warnings(whole) == []
 
     # A year-long request around 30 days of data must not change anything but
     # add a warning: supply and payback are annualised from the 30 data days.
     year = _analyse(client, **common, start_date="2026-01-01", end_date="2026-12-31")
     assert year["summary"] == s
-    assert len(year["warnings"]) == 1
-    assert "only covers 2026-07-01 to 2026-07-30" in year["warnings"][0]
+    assert len(_other_warnings(year)) == 1
+    assert "only covers 2026-07-01 to 2026-07-30" in _other_warnings(year)[0]
 
     # A 7-day filter narrows the data itself.
     week = _analyse(client, **common, start_date="2026-07-10", end_date="2026-07-16")
@@ -402,7 +419,9 @@ def test_num_days_and_payback_follow_the_data_not_the_request(client, data_dir):
     # Every day is identical usage, so a week annualises to (nearly) the same
     # payback as the month — not 30/7 or 365/7 times off.
     assert w["payback_years"] == pytest.approx(s["payback_years"], rel=0.05)
-    assert week["warnings"] == []
+    assert w["annualised_savings_dollars"] == pytest.approx(s["annualised_savings_dollars"],
+                                                           rel=0.05)
+    assert _other_warnings(week) == []
 
 
 def test_num_days_counts_distinct_dates_and_warns_on_gaps(client, data_dir):
@@ -413,9 +432,11 @@ def test_num_days_counts_distinct_dates_and_warns_on_gaps(client, data_dir):
     assert s["num_days"] == 3
     assert (s["data_start"], s["data_end"]) == ("2026-08-01", "2026-08-05")
     assert s["supply_cost_dollars"] == round(3 * EV_SCHEDULE["supply_charge_cents"] / 100, 2)
-    assert len(data["warnings"]) == 1
-    assert "gaps" in data["warnings"][0]
-    assert "3 of the 5 days" in data["warnings"][0]
+    others = _other_warnings(data)
+    assert len(others) == 1
+    assert "gaps" in others[0]
+    assert "3 of the 5 days" in others[0]
+    assert "missing: 2026-08-03, 2026-08-04" in others[0]
 
 
 def test_cached_filter_outside_data_is_error(client, data_dir):
@@ -430,8 +451,8 @@ def test_cached_filter_partial_overlap_warns(client, data_dir):
     data = _analyse(client, cached_file=name, start_date="2026-06-25", end_date="2026-07-03")
     assert data["summary"]["num_days"] == 3
     assert data["summary"]["data_start"] == "2026-07-01"
-    assert len(data["warnings"]) == 1
-    assert "only covers" in data["warnings"][0]
+    assert len(_other_warnings(data)) == 1
+    assert "only covers" in _other_warnings(data)[0]
 
 
 def test_cached_single_bound_is_open_ended(client, data_dir):
@@ -499,8 +520,10 @@ def test_live_fetch_caches_in_data_dir_and_warns_on_short_data(client, data_dir)
     # Tariff comes from the selected service -> EV plan.
     assert data["plan"]["id"] == EV
     assert data["summary"]["num_days"] == 1
-    assert len(data["warnings"]) == 1
-    assert "only 1 of the 3 requested days" in data["warnings"][0]
+    others = _other_warnings(data)
+    assert len(others) == 1
+    assert "only 1 of the 3 requested days" in others[0]
+    assert "missing: 2026-08-01, 2026-08-03." in others[0]
 
     cache = data_dir / "2026-08-01_to_2026-08-03_001X.json"
     assert [p.name for p in data_dir.iterdir()] == [cache.name]
@@ -538,6 +561,7 @@ def test_auth_status_logged_in_fetches_services_and_finalizes_once(client):
     for _ in range(2):
         data = client.get("/api/auth/status").json()
         assert data == {"logged_in": True, "services": services, "browser_open": False}
+    assert fake.services_calls == 1
     assert fake.finalize_calls == 1
 
 
@@ -610,3 +634,247 @@ def test_open_login_when_already_logged_in_keeps_client(client):
 def test_reset_without_client(client):
     assert client.post("/api/auth/reset").json() == {"status": "reset"}
     assert app.state.synergy is None
+
+
+def test_auth_status_empty_service_list_is_fetched_once(client):
+    fake = FakeClient(services=[])
+    app.state.synergy = fake
+    for _ in range(3):
+        data = client.get("/api/auth/status").json()
+        assert data == {"logged_in": True, "services": [], "browser_open": False}
+    assert fake.services_calls == 1
+    assert fake.finalize_calls == 1
+
+
+def test_auth_status_unexpected_services_error_is_200_with_error(client):
+    app.state.synergy = FakeClient(services_error=RuntimeError("Aura blew up"))
+    response = client.get("/api/auth/status")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["logged_in"] is False
+    assert data["services"] == []
+    assert data["browser_open"] is False
+    assert "Aura blew up" in data["error"]
+    assert app.state.services == []
+    assert app.state.services_loaded is False
+    assert app.state.login_finalized is False
+
+
+def test_auth_status_error_text_is_truncated(client):
+    app.state.synergy = FakeClient(services_error=KeyError("x" * 10_000))
+    response = client.get("/api/auth/status")
+    assert response.status_code == 200
+    assert len(response.json()["error"]) < 400
+
+
+def test_auth_status_finalize_failure_is_200_with_error_and_resets(client):
+    class BrokenFinalize(FakeClient):
+        async def finalize_login(self):
+            raise RuntimeError("window vanished")
+
+    app.state.synergy = BrokenFinalize(services=[{"service_id": "001X", "tariff": "EV2 TARIFF"}])
+    response = client.get("/api/auth/status")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["logged_in"] is False
+    assert data["services"] == []
+    assert "window vanished" in data["error"]
+    assert app.state.services == []
+    assert app.state.login_finalized is False
+
+
+# --- DNS-rebinding protection ---
+
+@pytest.mark.parametrize("host", ["evil.example", "evil.example:8000", "127.0.0.1.evil.example"])
+def test_untrusted_host_header_is_rejected(client, host):
+    response = client.get("/api/auth/status", headers={"Host": host})
+    assert response.status_code == 400
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1:8000", "localhost:8000", "localhost"])
+def test_local_host_headers_are_allowed(client, host):
+    assert client.get("/api/health", headers={"Host": host}).status_code == 200
+
+
+# --- request validation ---
+
+@pytest.mark.parametrize("field,value", [
+    ("battery_capacity_kwh", -1.0),
+    ("inverter_capacity_kw", 0.0),
+    ("inverter_capacity_kw", -2.0),
+    ("battery_cost_dollars", -1.0),
+    ("feed_in_peak_cents", -0.5),
+    ("feed_in_off_peak_cents", -1.0),
+    ("supply_charge_cents", -1.0),
+    ("rate_overrides", {"PEAK": -1.0}),
+    ("rate_overrides", {"PEAK": 30.0, "OVERNIGHT": -0.01}),
+])
+def test_analyse_rejects_negative_inputs(client, field, value):
+    response = client.post("/api/analyse", json={
+        "cached_file": "x.json", "battery_capacity_kwh": 15.0, field: value,
+    })
+    assert response.status_code == 422
+    assert client.get("/api/analyse/progress").json()["status"] == "idle"
+
+
+def test_analyse_accepts_zero_and_null_inputs(client, data_dir):
+    name = _write_cache(data_dir, "day.json", [FIXTURE_DAY])
+    data = _analyse(
+        client, cached_file=name, battery_capacity_kwh=0.0, battery_cost_dollars=None,
+        feed_in_peak_cents=0.0, feed_in_off_peak_cents=0.0, supply_charge_cents=0.0,
+        rate_overrides={"SUPER_OFFPEAK": 0.0},
+    )
+    s = data["summary"]
+    assert s["supply_cost_dollars"] == 0
+    assert s["export_credits_dollars"] == 0
+    assert s["period_savings_dollars"] == 0
+    assert s["payback_years"] is None
+
+
+# --- result echoes the inputs it was computed with ---
+
+def test_result_echoes_inputs(client, data_dir):
+    name = _write_cache(data_dir, "day.json", [FIXTURE_DAY])
+    data = _analyse(client, cached_file=name, battery_capacity_kwh=12.5,
+                    inverter_capacity_kw=3.0, battery_cost_dollars=9000.0,
+                    round_trip_efficiency=0.85, grid_topup=True)
+    assert data["inputs"] == {
+        "battery_capacity_kwh": 12.5, "inverter_capacity_kw": 3.0,
+        "battery_cost_dollars": 9000.0, "round_trip_efficiency": 0.85, "grid_topup": True,
+    }
+    defaults = _analyse(client, cached_file=name)["inputs"]
+    assert defaults == {
+        "battery_capacity_kwh": 15.0, "inverter_capacity_kw": 5.0,
+        "battery_cost_dollars": None, "round_trip_efficiency": 0.9, "grid_topup": False,
+    }
+
+
+# --- 12-month projection of savings / payback ---
+
+def test_short_range_is_projected_to_a_year_with_warning(client, data_dir):
+    name = _write_cache(data_dir, "july.json", JULY)
+    data = _analyse(client, cached_file=name, battery_cost_dollars=10000.0)
+    s = data["summary"]
+    assert s["is_projection"] is True
+    assert s["period_savings_dollars"] > 0
+    # Annualised from the unrounded savings; period_savings is rounded to cents.
+    assert s["annualised_savings_dollars"] == pytest.approx(
+        s["period_savings_dollars"] / 30 * 365, abs=0.15)
+    assert s["payback_years"] == pytest.approx(10000.0 / s["annualised_savings_dollars"], abs=0.06)
+
+    [warning] = _projection_warnings(data)
+    assert "from 30 days of data (2026-07-01 to 2026-07-30)" in warning
+    assert "estimate" in warning
+    assert "full 12 months" in warning
+
+
+def test_single_day_projection_warning_is_singular(client, data_dir):
+    name = _write_cache(data_dir, "day.json", [FIXTURE_DAY])
+    [warning] = _projection_warnings(_analyse(client, cached_file=name))
+    assert "from 1 day of data (2026-08-02 to 2026-08-02)" in warning
+
+
+@pytest.mark.parametrize("num_days,is_projection,warned", [
+    (329, True, True),
+    (330, True, False),
+    (364, True, False),
+    (365, False, False),
+])
+def test_projection_flag_and_warning_thresholds(client, data_dir, num_days, is_projection, warned):
+    days = _days(date(2025, 8, 1), num_days)
+    name = _write_cache(data_dir, "long.json", days)
+    data = _analyse(client, cached_file=name, battery_cost_dollars=10000.0)
+    s = data["summary"]
+    assert s["num_days"] == num_days
+    assert s["is_projection"] is is_projection
+    assert bool(_projection_warnings(data)) is warned
+    if warned:
+        assert f"from {num_days} days of data (2025-08-01 to {days[-1]})" in _projection_warnings(data)[0]
+    if num_days == 365:
+        # A full year is measured, not projected: annual == period savings.
+        assert s["annualised_savings_dollars"] == pytest.approx(s["period_savings_dollars"],
+                                                               abs=0.01)
+
+
+@pytest.mark.parametrize("body", [
+    {"battery_capacity_kwh": 0.0, "battery_cost_dollars": 10000.0},  # no saving
+    {"battery_capacity_kwh": 15.0, "battery_cost_dollars": None},     # no cost
+    {"battery_capacity_kwh": 15.0, "battery_cost_dollars": 0.0},
+])
+def test_no_payback_without_cost_or_saving(client, data_dir, body):
+    name = _write_cache(data_dir, "july.json", JULY)
+    s = _analyse(client, cached_file=name, **body)["summary"]
+    assert s["payback_years"] is None
+    assert s["annualised_savings_dollars"] is not None
+    if body["battery_capacity_kwh"] == 0:
+        assert s["annualised_savings_dollars"] == 0
+
+
+# --- live fetch: missing days and gaps ---
+
+def _live(client, days: list[date], start: str, end: str) -> dict:
+    app.state.synergy = FakeClient(intervals=[iv for d in days for iv in _day_intervals(d)])
+    app.state.services = [{"service_id": "001X", "tariff": "EV2 TARIFF"}]
+    return _analyse(client, service_id="001X", start_date=start, end_date=end)
+
+
+def test_live_fetch_with_a_hole_warns_missing_and_gap(client, data_dir):
+    data = _live(client, [date(2026, 8, 1), date(2026, 8, 3)], "2026-08-01", "2026-08-03")
+    assert data["summary"]["num_days"] == 2
+    others = _other_warnings(data)
+    assert len(others) == 2
+    [short] = [w for w in others if "requested days" in w]
+    [gap] = [w for w in others if "gaps" in w]
+    assert "only 2 of the 3 requested days; missing: 2026-08-02." in short
+    assert "only 2 of the 3 days between 2026-08-01 and 2026-08-03" in gap
+    assert "missing: 2026-08-02" in gap
+
+
+def test_live_fetch_long_missing_list_is_abbreviated(client, data_dir):
+    data = _live(client, [date(2026, 8, 1), date(2026, 8, 10)], "2026-08-01", "2026-08-10")
+    listed = ("missing: 2026-08-02, 2026-08-03, 2026-08-04, 2026-08-05, 2026-08-06, "
+              "… (+3 more)")
+    others = _other_warnings(data)
+    assert any("only 2 of the 10 requested days" in w and listed in w for w in others)
+    assert any("gaps" in w and listed in w for w in others)
+
+
+def test_live_fetch_without_gaps_has_no_gap_warning(client, data_dir):
+    data = _live(client, [date(2026, 8, 1), date(2026, 8, 2)], "2026-08-01", "2026-08-02")
+    assert _other_warnings(data) == []
+
+
+# --- usage under an unrecognised tariff column ---
+
+def _with_unknown_rows(n: int) -> tuple[list[dict], float]:
+    """Fixture day with the first n usage rows relabelled as UNKNOWN."""
+    intervals = _day_intervals(FIXTURE_DAY)
+    relabelled = [iv for iv in intervals if iv["consumption_kwh"] > 0][:n]
+    for iv in relabelled:
+        iv["tariff_name"] = "UNKNOWN"
+    return intervals, sum(iv["consumption_kwh"] for iv in relabelled)
+
+
+def test_unknown_column_usage_is_warned_and_priced_by_time_of_day(client, data_dir):
+    intervals, kwh = _with_unknown_rows(3)
+    name = _write_cache(data_dir, "day.json", [], intervals=intervals)
+    data = _analyse(client, cached_file=name)  # EV2 -> known plan, re-binned
+
+    [warning] = [w for w in data["warnings"] if "unrecognised tariff column" in w]
+    assert warning.startswith("3 half-hours had usage in an unrecognised tariff column")
+    assert f"({kwh:.1f} kWh)" in warning
+    assert "priced by time-of-day" in warning
+    # Re-binned into the plan's periods, so nothing is left unpriced.
+    assert all(iv["tariff_name"] in data["plan"]["rates"] for iv in data["intervals"])
+    assert all(iv["rate_cents"] > 0 for iv in data["intervals"])
+    assert not [w for w in data["warnings"] if w.startswith("No rate")]
+    assert round(data["summary"]["total_consumption_kwh"], 2) == round(FIXTURE_CONSUMPTION_KWH, 2)
+
+
+def test_unknown_column_usage_on_unknown_tariff_is_reported_unpriced(client, data_dir):
+    intervals, kwh = _with_unknown_rows(1)
+    name = _write_cache(data_dir, "day.json", [], tariff_label="MYSTERY TARIFF",
+                        intervals=intervals)
+    data = _analyse(client, cached_file=name)
+    assert f"No rate for 'Unknown' — {kwh:.1f} kWh priced at 0c" in data["warnings"]
+    assert not [w for w in data["warnings"] if "unrecognised tariff column" in w]

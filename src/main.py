@@ -1,9 +1,11 @@
 from contextlib import asynccontextmanager
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+from typing import Annotated
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from pathlib import Path
 import asyncio
 import json
@@ -12,7 +14,7 @@ import re
 import sys
 
 from .browser_client import SynergyBrowserClient, NotLoggedIn
-from .chartdata import apply_rates, unpriced_consumption
+from .chartdata import apply_rates, unpriced_consumption, count_unknown, unknown_kwh
 from .models import (
     EnergyPlan, plan_for_tariff, display_name, rate_schedule_for,
     rate_schedules_with_aliases, DEFAULT_SUPPLY_CHARGE_CENTS,
@@ -31,6 +33,10 @@ SESSION_EXPIRED_MSG = (
     "Your Synergy session has expired or the login window was closed — "
     "please log in again."
 )
+# Below this many days of data, the 12-month projection gets a warning; from
+# here up to 365 days it is still a projection but close enough to a year.
+PROJECTION_WARNING_DAYS = 330
+MAX_LISTED_MISSING_DATES = 5
 
 
 def _truncate(text, limit: int = MAX_ERROR_CHARS) -> str:
@@ -55,6 +61,7 @@ def _idle_job() -> dict:
 def _reset_session_state():
     """Forget per-login state (services, window-closed flag)."""
     app.state.services = []
+    app.state.services_loaded = False  # services fetched (even if empty)
     app.state.login_finalized = False
 
 
@@ -70,8 +77,7 @@ async def lifespan(app: FastAPI):
     # The browser is only launched when the user asks to log in, so importing
     # the app (e.g. under tests) never spawns Chromium.
     app.state.synergy = None
-    app.state.services = []
-    app.state.login_finalized = False
+    _reset_session_state()
     app.state.auth_lock = asyncio.Lock()
     app.state.job = _idle_job()
     app.state.job_task = None  # strong ref so the background job isn't GC'd
@@ -81,6 +87,14 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Synergy Battery Feasibility Analyser", lifespan=lifespan)
+
+# DNS-rebinding protection: the server is bound to 127.0.0.1, but a malicious
+# page could still point its own hostname at 127.0.0.1 and read responses
+# (/api/auth/status returns account details). Only accept local Host headers.
+# "testserver" is the Host FastAPI's TestClient sends.
+app.add_middleware(
+    TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "testserver"],
+)
 
 if getattr(sys, "frozen", False):
     static_dir = Path(sys._MEIPASS) / "static"
@@ -95,7 +109,12 @@ DATA_DIR = Path(os.environ.get("SYNERGY_DATA_DIR") or "data")
 
 # --- Request models ---
 
+NonNegative = Annotated[float, Field(ge=0)]
+
+
 class AnalyseRequest(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False)
+
     service_id: str | None = None
     tariff_label: str | None = None
     # Plan to project. None = the plan matching the data's own tariff label,
@@ -105,15 +124,15 @@ class AnalyseRequest(BaseModel):
     # inclusive filter; omitted = all cached data.
     start_date: date | None = None
     end_date: date | None = None
-    battery_capacity_kwh: float
-    battery_cost_dollars: float | None = None
-    inverter_capacity_kw: float = 5.0
+    battery_capacity_kwh: float = Field(ge=0)
+    battery_cost_dollars: float | None = Field(None, ge=0)
+    inverter_capacity_kw: float = Field(5.0, gt=0)
     round_trip_efficiency: float = Field(0.9, gt=0, le=1)
     grid_topup: bool = False
-    feed_in_peak_cents: float = 10.0
-    feed_in_off_peak_cents: float = 2.0
-    supply_charge_cents: float | None = None
-    rate_overrides: dict[str, float] | None = None
+    feed_in_peak_cents: float = Field(10.0, ge=0)
+    feed_in_off_peak_cents: float = Field(2.0, ge=0)
+    supply_charge_cents: float | None = Field(None, ge=0)
+    rate_overrides: dict[str, NonNegative] | None = None
     cached_file: str | None = None
 
     @model_validator(mode="after")
@@ -245,6 +264,8 @@ async def auth_status():
     On the first status check after login we fetch the service list and close
     the visible browser window — the session persists in the browser context.
     `browser_open` is true while a login window is open but not yet logged in.
+    Never fails with a 500: an unexpected error fetching services/finalising
+    is reported as `error` (logged_in false) so the UI can stop polling.
     """
     client: SynergyBrowserClient | None = app.state.synergy
     if client is None or not client.logged_in:
@@ -252,8 +273,9 @@ async def auth_status():
         browser_open = client is not None and bool(getattr(client, "window_open", False))
         return {"logged_in": False, "services": [], "browser_open": browser_open}
     try:
-        if not app.state.services:
+        if not app.state.services_loaded:
             app.state.services = await client.get_services()
+            app.state.services_loaded = True  # cache even an empty list
         if not app.state.login_finalized:
             await client.finalize_login()
             app.state.login_finalized = True
@@ -262,6 +284,14 @@ async def auth_status():
         return {
             "logged_in": False, "services": [],
             "browser_open": bool(getattr(client, "window_open", False)),
+        }
+    except Exception as e:  # noqa: BLE001 — status polling must never 500
+        _reset_session_state()
+        return {
+            "logged_in": False, "services": [],
+            "browser_open": bool(getattr(client, "window_open", False)),
+            "error": "Could not load your Synergy services: "
+                     + (_truncate(e) or type(e).__name__),
         }
     return {"logged_in": True, "services": app.state.services, "browser_open": False}
 
@@ -291,6 +321,22 @@ def _load_cached(name: str) -> tuple[list[dict], str | None]:
     intervals.sort(key=lambda i: i["timestamp"])
     tariff = payload.get("tariff_label") if isinstance(payload, dict) else None
     return intervals, tariff
+
+
+def _missing_dates(present: set[date], start: date, end: date) -> list[date]:
+    """Dates in start..end (inclusive) that have no readings."""
+    return [
+        start + timedelta(days=k) for k in range((end - start).days + 1)
+        if start + timedelta(days=k) not in present
+    ]
+
+
+def _format_dates(dates: list[date], limit: int = MAX_LISTED_MISSING_DATES) -> str:
+    """"d1, d2, … (+N more)" — keeps long gap lists readable."""
+    text = ", ".join(d.isoformat() for d in dates[:limit])
+    if len(dates) > limit:
+        text += f", … (+{len(dates) - limit} more)"
+    return text
 
 
 def _filter_dates(intervals: list[dict], start: date | None, end: date | None) -> list[dict]:
@@ -413,12 +459,13 @@ async def _do_analysis(req: AnalyseRequest, job: dict) -> dict:
             "intervals": [{**i, "timestamp": i["timestamp"].isoformat()} for i in intervals],
         }, indent=2))
 
-        fetched_days = len({i["timestamp"].date() for i in intervals})
-        if fetched_days < requested_days:
+        fetched_dates = {i["timestamp"].date() for i in intervals}
+        if len(fetched_dates) < requested_days:
+            missing = _missing_dates(fetched_dates, req.start_date, req.end_date)
             warnings.append(
-                f"Synergy returned data for only {fetched_days} of the {requested_days} "
-                f"requested days ({intervals[0]['timestamp'].date()} to "
-                f"{intervals[-1]['timestamp'].date()}); results cover only those days."
+                f"Synergy returned data for only {len(fetched_dates)} of the {requested_days} "
+                f"requested days; missing: {_format_dates(missing)}. "
+                "Results cover only the days returned."
             )
 
     # Days actually present drive the supply charge and payback annualisation.
@@ -428,11 +475,17 @@ async def _do_analysis(req: AnalyseRequest, job: dict) -> dict:
     span_days = (data_end - data_start).days + 1
     if req.cached_file:
         job["total"] = job["done"] = num_days
-        if num_days < span_days:
-            warnings.append(
-                f"The data has gaps: only {num_days} of the {span_days} days between "
-                f"{data_start} and {data_end} have readings."
-            )
+    if num_days < span_days:
+        gaps = _missing_dates(set(data_dates), data_start, data_end)
+        warnings.append(
+            f"The data has gaps: only {num_days} of the {span_days} days between "
+            f"{data_start} and {data_end} have readings; missing: {_format_dates(gaps)}."
+        )
+
+    # Usage under a tariff column we don't recognise. Counted before
+    # assign_periods(), which overwrites tariff_name in known-plan mode.
+    unknown_count = count_unknown(intervals)
+    unknown_total_kwh = unknown_kwh(intervals)
 
     # 2. Choose the plan to project. A known plan re-bins each slot into that
     #    plan's time-of-use windows (enabling "what if I switched plans?"); an
@@ -465,6 +518,14 @@ async def _do_analysis(req: AnalyseRequest, job: dict) -> dict:
             rates_source = "override"
         rates_by_key = {**base_rates, **overrides}
         assign_periods(intervals, plan_id)
+        if unknown_count:
+            # Re-binning by time-of-day prices these too; the data-driven path
+            # below prices UNKNOWN at 0c and the "No rate for" warning covers it.
+            warnings.append(
+                f"{unknown_count} half-hour{'s' if unknown_count != 1 else ''} had usage in "
+                f"an unrecognised tariff column ({unknown_total_kwh:.1f} kWh) — they were "
+                "priced by time-of-day under the selected plan."
+            )
         rate_map = rate_map_for_plan(plan_id, rates_by_key)
         supply = req.supply_charge_cents
         if supply is None:
@@ -520,10 +581,21 @@ async def _do_analysis(req: AnalyseRequest, job: dict) -> dict:
     net_savings = total_discharge_savings - total_lost_feed_in - total_topup_cost
     total_cost_with_battery = total_cost_without_battery - net_savings
 
+    # Savings are projected to 12 months from however many days were analysed.
+    # Short ranges are a rough estimate: solar and usage vary by season.
+    annual_savings = (net_savings / 100) / num_days * 365 if num_days else None
+    is_projection = num_days < 365
     payback_years = None
-    if req.battery_cost_dollars and net_savings > 0:
-        annual_savings = (net_savings / 100) / num_days * 365
+    if req.battery_cost_dollars and annual_savings is not None and annual_savings > 0:
         payback_years = round(req.battery_cost_dollars / annual_savings, 1)
+    if num_days < PROJECTION_WARNING_DAYS:
+        warnings.append(
+            f"Savings and payback are projected to 12 months from {num_days} "
+            f"day{'s' if num_days != 1 else ''} of data ({data_start} to {data_end}). "
+            "Solar generation and household usage vary a lot by season, so these "
+            "figures are an estimate, not a measured result — analyse a full "
+            "12 months for a reliable figure."
+        )
 
     return {
         "plan": {
@@ -542,11 +614,22 @@ async def _do_analysis(req: AnalyseRequest, job: dict) -> dict:
             "total_cost_with_battery_dollars": round(total_cost_with_battery / 100, 2),
             "period_savings_dollars": round(net_savings / 100, 2),
             "export_credits_dollars": round(total_export_credits / 100, 2),
+            "annualised_savings_dollars": (
+                round(annual_savings, 2) if annual_savings is not None else None
+            ),
+            "is_projection": is_projection,
             "payback_years": payback_years,
             "num_days": num_days,
             "data_start": data_start.isoformat(),
             "data_end": data_end.isoformat(),
             "supply_cost_dollars": round(total_supply_cost / 100, 2),
+        },
+        "inputs": {
+            "battery_capacity_kwh": req.battery_capacity_kwh,
+            "inverter_capacity_kw": req.inverter_capacity_kw,
+            "battery_cost_dollars": req.battery_cost_dollars,
+            "round_trip_efficiency": req.round_trip_efficiency,
+            "grid_topup": req.grid_topup,
         },
         "warnings": warnings,
         "cache_file": cache_name,
