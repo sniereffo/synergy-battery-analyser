@@ -63,8 +63,14 @@ def simulate_battery(
     grid_topup: bool = False,
     inverter_capacity_kw: float = 5.0,
     round_trip_efficiency: float = 0.9,
+    initial_kwh: float = 0.0,
 ) -> list[dict]:
     """Simulate battery charge/discharge across half-hourly usage data.
+
+    `initial_kwh` is the charge at the start of the period (capped to the
+    capacity). Callers comparing sizes should start each battery at its own
+    end-of-period charge (see `simulate_steady_state`) so energy left in the
+    battery at the end isn't counted as a cost with no benefit.
 
     `usage_data` must be sorted by timestamp. Raises ValueError for a negative
     `capacity_kwh`, a non-positive `inverter_capacity_kw`, or a
@@ -76,6 +82,14 @@ def simulate_battery(
       deficit. Round-trip losses are applied on discharge: delivering D kWh to
       the house drains D / round_trip_efficiency kWh from the battery.
       `discharge_kwh` is the energy delivered to the house.
+    - Discharge is skipped where grid power is too cheap to be worth it: if a
+      slot's import rate x round_trip_efficiency is no more than the highest
+      feed-in rate in the data, the stored energy is worth more kept (it
+      displaces solar that would otherwise be exported at up to that rate, or
+      covers a dearer period later), so the grid serves that load. A real
+      battery controller behaves the same way; without this a larger battery
+      could spend stored 10c solar on 8.9c Super Off Peak load and save less
+      than a smaller one.
     - Charge and delivered-discharge energy are capped by the inverter
       capacity (kW * 0.5 h per slot).
     - Grid top-up (optional) buys energy at the cheapest *positive* rate:
@@ -110,7 +124,7 @@ def simulate_battery(
     if not 0 < round_trip_efficiency <= 1:
         raise ValueError("round_trip_efficiency must be in (0, 1]")
 
-    battery_level = 0.0
+    battery_level = min(max(initial_kwh, 0.0), capacity_kwh)
     result = []
     max_per_interval = inverter_capacity_kw * 0.5  # kWh per 30-min interval
 
@@ -119,6 +133,9 @@ def simulate_battery(
     topup_windows: dict[int, tuple[float, float]] = {}
     if grid_topup and len(positive_rates) >= 2:
         topup_windows = _topup_windows(usage_data, min(positive_rates), max_per_interval)
+
+    # Below this import rate (after losses) discharging isn't worth it.
+    max_feed_in = max((e["feed_in_rate_cents"] for e in usage_data), default=0.0)
 
     for idx, entry in enumerate(usage_data):
         consumption = entry["consumption_kwh"]
@@ -149,9 +166,11 @@ def simulate_battery(
             ), 0.0)
             battery_level += grid_topup_kwh
 
-        if net < 0 and not in_window:
+        worth_discharging = rate * round_trip_efficiency > max_feed_in
+        if net < 0 and not in_window and worth_discharging:
             # Deficit — discharge battery to cover it (losses on discharge).
-            # Skipped in cheap top-up windows: the grid serves that load.
+            # Skipped in cheap top-up windows and where grid power is cheaper
+            # than the stored energy's value: the grid serves that load.
             discharge_kwh = min(-net, battery_level * round_trip_efficiency, max_per_interval)
             battery_level = max(battery_level - discharge_kwh / round_trip_efficiency, 0.0)
             savings_cents = discharge_kwh * rate
@@ -171,3 +190,24 @@ def simulate_battery(
         })
 
     return result
+
+
+def simulate_steady_state(
+    usage_data: list[dict],
+    capacity_kwh: float,
+    grid_topup: bool = False,
+    inverter_capacity_kw: float = 5.0,
+    round_trip_efficiency: float = 0.9,
+) -> list[dict]:
+    """Simulate treating the period as one cycle of a repeating year.
+
+    A first pass from empty finds the charge left at the end; the second pass
+    starts from that charge. Without this, a larger battery is penalised for
+    solar it stored (forfeiting feed-in) that is still in it when the period
+    ends, which can make it look worse than a smaller one.
+    """
+    first = simulate_battery(usage_data, capacity_kwh, grid_topup,
+                             inverter_capacity_kw, round_trip_efficiency)
+    end_kwh = first[-1]["battery_kwh"] if first else 0.0
+    return simulate_battery(usage_data, capacity_kwh, grid_topup, inverter_capacity_kw,
+                            round_trip_efficiency, initial_kwh=end_kwh)

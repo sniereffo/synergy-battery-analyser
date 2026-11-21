@@ -278,8 +278,9 @@ def test_fixture_day_never_discharges_at_cheapest_rate_with_topup(priced_interva
     on = simulate_battery(copy.deepcopy(priced_intervals), 10.0, grid_topup=True)
     off = simulate_battery(copy.deepcopy(priced_intervals), 10.0, grid_topup=False)
     assert all(e["discharge_kwh"] == 0 for e in on if e["rate_cents"] == cheapest)
-    # Without top-up the battery does cover some cheapest-rate load that day.
-    assert sum(e["discharge_kwh"] for e in off if e["rate_cents"] == cheapest) > 0
+    # Without top-up it doesn't either: Super Off Peak grid power (8.6c, x 90%
+    # efficiency) is cheaper than the 10c peak feed-in the stored solar is worth.
+    assert all(e["discharge_kwh"] == 0 for e in off if e["rate_cents"] == cheapest)
 
 
 def test_topup_slot_never_discharges(priced_intervals):
