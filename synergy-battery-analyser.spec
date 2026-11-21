@@ -10,7 +10,12 @@
 # CLI), which the Synergy login needs. No browser is bundled: the login window
 # uses the installed Chrome or Edge, or downloads Chromium once on first login.
 
+import sys
+
 from PyInstaller.utils.hooks import collect_data_files
+
+# App icon: .ico for Windows, .icns for macOS (regenerate with packaging/icon/build.sh).
+ICON = 'packaging/icon/icon.icns' if sys.platform == 'darwin' else 'packaging/icon/icon.ico'
 
 a = Analysis(
     ['packaging/launcher.py'],
@@ -48,4 +53,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=ICON,
 )

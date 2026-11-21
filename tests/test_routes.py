@@ -1057,3 +1057,10 @@ def test_cost_breakdown_rows_add_up(client, data_dir):
             - o["export_credits_with_battery_dollars"] == \
             pytest.approx(o["total_cost_with_battery_dollars"], abs=cents)
         assert o["usage_cost_with_battery_dollars"] < s["usage_cost_dollars"]
+
+
+def test_favicon_served(client):
+    r = client.get("/favicon.ico")
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "image/x-icon"
+    assert r.content[:4] == b"\x00\x00\x01\x00"  # ICO header

@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1a2633"/>
+      <stop offset="1" stop-color="#0a0e13"/>
+    </linearGradient>
+    <linearGradient id="cell" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#6ee7a8"/>
+      <stop offset="1" stop-color="#22c55e"/>
+    </linearGradient>
+  </defs>
+  <!-- tile (macOS-style 100px margin) -->
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
+  <!-- sun: right ray tip (822 + 13 cap) moved to align with the battery terminal's right edge (812) -->
+  <g fill="#facc15" transform="translate(-23 -20)">
+    <circle cx="700" cy="300" r="74"/>
+    <g stroke="#facc15" stroke-width="26" stroke-linecap="round">
+      <line x1="700" y1="178" x2="700" y2="196"/>
+      <line x1="700" y1="404" x2="700" y2="422"/>
+      <line x1="578" y1="300" x2="596" y2="300"/>
+      <line x1="804" y1="300" x2="822" y2="300"/>
+      <line x1="614" y1="214" x2="627" y2="227"/>
+      <line x1="773" y1="373" x2="786" y2="386"/>
+      <line x1="786" y1="214" x2="773" y2="227"/>
+      <line x1="627" y1="373" x2="614" y2="386"/>
+    </g>
+  </g>
+  <!-- battery: outline 202..762 + terminal to 802, shifted so the side gaps match -->
+  <g transform="translate(10 0)">
+    <rect x="222" y="470" width="520" height="290" rx="52" fill="none" stroke="#4ade94" stroke-width="40"/>
+    <rect x="762" y="560" width="40" height="110" rx="14" fill="#4ade94"/>
+    <rect x="282" y="530" width="120" height="170" rx="20" fill="url(#cell)"/>
+    <rect x="422" y="530" width="120" height="170" rx="20" fill="url(#cell)"/>
+    <rect x="562" y="530" width="120" height="170" rx="20" fill="url(#cell)" opacity="0.35"/>
+  </g>
+</svg>

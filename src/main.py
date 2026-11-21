@@ -864,6 +864,12 @@ async def root():
     return FileResponse(static_dir / "index.html")
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    # Browsers (Safari especially) ask for /favicon.ico regardless of <link>.
+    return FileResponse(static_dir / "favicon.ico", media_type="image/x-icon")
+
+
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 
