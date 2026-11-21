@@ -189,17 +189,97 @@ def test_no_topup_on_flat_plan(rates):
     assert _total(r, "grid_topup_cost_cents") == 0
 
 
-def test_topup_only_in_last_cheap_run_of_the_day():
+def test_topup_in_every_contiguous_cheap_run():
     usage = [
-        _iv("01:00", rate=10.0),          # earlier cheap run: skipped
+        _iv("01:00", rate=10.0),          # a lone cheap slot is a window too
         _iv("07:00", consumption=0.5, rate=30.0),
-        _iv("12:00", rate=10.0),          # last cheap run of the day
+        _iv("12:00", rate=10.0),          # second cheap run of the day
         _iv("12:30", rate=10.0),
         _iv("18:00", consumption=3.0, rate=50.0),
     ]
     r = simulate_battery(usage, capacity_kwh=3.0, grid_topup=True, round_trip_efficiency=1.0)
-    assert r[0]["grid_topup_kwh"] == 0
-    assert r[2]["grid_topup_kwh"] + r[3]["grid_topup_kwh"] == pytest.approx(3.0)
+    # 01:00: fills as far as one slot of inverter allows.
+    assert r[0]["grid_topup_kwh"] == pytest.approx(2.5)
+    assert r[1]["discharge_kwh"] == pytest.approx(0.5)
+    # 12:00-12:30: only the 1 kWh shortfall, bought in the window's last slot.
+    assert [e["grid_topup_kwh"] for e in r[2:4]] == pytest.approx([0.0, 1.0])
+    assert r[3]["battery_kwh"] == pytest.approx(3.0)
+    assert r[4]["discharge_kwh"] == pytest.approx(2.5)
+
+
+def _at(day: int, hhmm: str, **kw) -> dict:
+    iv = _iv(hhmm, **kw)
+    iv["timestamp"] = iv["timestamp"].replace(day=day)
+    return iv
+
+
+def test_topup_window_wrapping_midnight_is_one_window():
+    # Cheap 23:00-01:00 across midnight: one window, topped up at its end.
+    usage = [
+        _at(2, "23:00", rate=10.0),
+        _at(2, "23:30", rate=10.0),
+        _at(3, "00:00", rate=10.0),
+        _at(3, "00:30", rate=10.0),
+        _at(3, "18:00", consumption=3.0, rate=50.0),
+    ]
+    r = simulate_battery(usage, capacity_kwh=4.0, grid_topup=True, round_trip_efficiency=1.0)
+    assert [e["grid_topup_kwh"] for e in r] == pytest.approx([0.0, 0.0, 1.5, 2.5, 0.0])
+    assert r[3]["battery_kwh"] == pytest.approx(4.0)
+    assert r[4]["discharge_kwh"] == pytest.approx(2.5)
+    assert _total(r, "grid_topup_cost_cents") == pytest.approx(40.0)
+
+
+def test_topup_run_breaks_at_a_gap_in_the_data():
+    # Adjacent in the list but a day apart (missing day): two windows, so the
+    # first one fills just-in-time at its own end and the second has no room.
+    usage = [
+        _at(2, "23:00", rate=10.0),
+        _at(2, "23:30", rate=10.0),
+        _at(4, "00:00", rate=10.0),
+        _at(4, "00:30", rate=10.0),
+        _at(4, "18:00", consumption=3.0, rate=50.0),
+    ]
+    r = simulate_battery(usage, capacity_kwh=4.0, grid_topup=True, round_trip_efficiency=1.0)
+    assert [e["grid_topup_kwh"] for e in r] == pytest.approx([1.5, 2.5, 0.0, 0.0, 0.0])
+
+
+def _charged_then_cheap_load():
+    return [
+        _iv("17:00", export=2.0, rate=30.0),               # charge 2 kWh from solar
+        _iv("18:00", consumption=0.5, rate=50.0),          # discharge 0.5
+        _iv("23:00", consumption=1.0, rate=10.0),          # cheapest-rate load
+        _iv("23:30", rate=10.0),
+    ]
+
+
+def test_no_discharge_in_cheap_window_when_topup_on():
+    r = simulate_battery(_charged_then_cheap_load(), capacity_kwh=4.0, grid_topup=True,
+                         round_trip_efficiency=1.0)
+    assert r[1]["discharge_kwh"] == pytest.approx(0.5)
+    # 23:00: the grid serves the 1 kWh at 10c; the battery is left alone...
+    assert r[2]["discharge_kwh"] == 0
+    assert r[2]["savings_cents"] == 0
+    # ...and only the 2.5 kWh shortfall is bought, at the window's end.
+    assert [e["grid_topup_kwh"] for e in r[2:]] == pytest.approx([0.0, 2.5])
+    assert r[3]["battery_kwh"] == pytest.approx(4.0)
+
+
+def test_cheap_window_discharge_unchanged_when_topup_off():
+    r = simulate_battery(_charged_then_cheap_load(), capacity_kwh=4.0, grid_topup=False,
+                         round_trip_efficiency=1.0)
+    assert r[2]["discharge_kwh"] == pytest.approx(1.0)
+    assert r[2]["savings_cents"] == pytest.approx(10.0)
+    assert r[3]["battery_kwh"] == pytest.approx(0.5)
+    assert _total(r, "grid_topup_kwh") == 0
+
+
+def test_fixture_day_never_discharges_at_cheapest_rate_with_topup(priced_intervals):
+    cheapest = min(e["rate_cents"] for e in priced_intervals if e["rate_cents"] > 0)
+    on = simulate_battery(copy.deepcopy(priced_intervals), 10.0, grid_topup=True)
+    off = simulate_battery(copy.deepcopy(priced_intervals), 10.0, grid_topup=False)
+    assert all(e["discharge_kwh"] == 0 for e in on if e["rate_cents"] == cheapest)
+    # Without top-up the battery does cover some cheapest-rate load that day.
+    assert sum(e["discharge_kwh"] for e in off if e["rate_cents"] == cheapest) > 0
 
 
 def test_topup_slot_never_discharges(priced_intervals):
@@ -234,10 +314,21 @@ def test_topup_does_not_displace_solar_in_the_cheap_window(priced_intervals):
     assert on[-1]["battery_kwh"] >= off[-1]["battery_kwh"]
 
 
-def test_topup_never_changes_a_battery_that_solar_already_fills(priced_intervals):
-    # 10 kWh: the fixture day's solar fills it in the window, so top-up is a no-op.
+def test_topup_buys_nothing_when_solar_already_fills(priced_intervals):
+    # 10 kWh: the fixture day's solar fills it in the window, so no grid top-up.
     off = simulate_battery(copy.deepcopy(priced_intervals), 10.0, grid_topup=False)
     on = simulate_battery(copy.deepcopy(priced_intervals), 10.0, grid_topup=True)
     assert _total(on, "grid_topup_kwh") == 0
-    assert _total(on, "charge_kwh") == pytest.approx(_total(off, "charge_kwh"))
-    assert _net_savings(on) == pytest.approx(_net_savings(off))
+    assert _total(on, "grid_topup_cost_cents") == 0
+    # Not discharging in the cheap window leaves less room for solar, never more.
+    assert _total(on, "charge_kwh") <= _total(off, "charge_kwh") + 1e-9
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"capacity_kwh": -1.0},
+    {"capacity_kwh": 10.0, "inverter_capacity_kw": 0.0},
+    {"capacity_kwh": 10.0, "inverter_capacity_kw": -1.0},
+])
+def test_invalid_capacity_or_inverter_raises(priced_intervals, kwargs):
+    with pytest.raises(ValueError):
+        simulate_battery(priced_intervals, **kwargs)
