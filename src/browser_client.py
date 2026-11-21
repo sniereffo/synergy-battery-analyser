@@ -11,6 +11,9 @@ attach automatically), fetching half-hourly usage in date-span requests
 
 import asyncio
 import json
+import logging
+import os
+import subprocess
 from datetime import date, timedelta
 
 from playwright.async_api import async_playwright
@@ -24,7 +27,32 @@ from .aura import (
 )
 from .chartdata import parse_halfhourly_response
 
+log = logging.getLogger(__name__)
+
 PORTAL_URL = "https://my.synergy.net.au/s/"
+
+# Browsers tried for the login window, in order. Using the person's installed
+# Chrome or Edge (with a fresh, temporary profile — never their own profile or
+# cookies) means nothing has to be downloaded. "chromium" is Playwright's own
+# build, downloaded once on first use if neither is installed. Override with
+# SYNERGY_BROWSER=chrome|msedge|chromium.
+BROWSER_ORDER = ("chrome", "msedge", "chromium")
+
+
+def install_playwright_chromium() -> None:
+    """Download Playwright's Chromium for the login window (one-off).
+
+    Calls Playwright's bundled driver directly rather than `python -m
+    playwright`, so it also works inside a frozen (PyInstaller) build.
+    """
+    from playwright._impl._driver import compute_driver_executable, get_driver_env
+
+    driver, cli = compute_driver_executable()
+    log.warning("No Chrome or Edge found; downloading a browser for the Synergy login (one-off)…")
+    # --no-shell: skip the headless variant the login window never uses
+    # (~390 MB installed instead of ~650 MB).
+    subprocess.run([driver, cli, "install", "--no-shell", "chromium"], env=get_driver_env(),
+                   check=True, capture_output=True)
 AURA_PATH = "/s/sfsites/aura"
 
 
@@ -44,6 +72,7 @@ class SynergyBrowserClient:
         self._aura_token: str | None = None
         self._page_uri: str = "/s/"
         self._request_id = 1000
+        self.browser_name: str | None = None  # which browser was launched
 
     async def start(self):
         """Launch the browser and begin capturing Aura credentials.
@@ -53,7 +82,7 @@ class SynergyBrowserClient:
         """
         try:
             self._pw = await async_playwright().start()
-            self._browser = await self._pw.chromium.launch(headless=self._headless)
+            self._browser = await self._launch_browser()
             self._context = await self._browser.new_context()
             self._page = await self._context.new_page()
             self._context.on("request", self._on_request)
@@ -61,6 +90,32 @@ class SynergyBrowserClient:
         except BaseException:
             await self.close()
             raise
+
+    async def _launch_browser(self):
+        """Launch the first available browser from BROWSER_ORDER.
+
+        If none can start and Playwright's Chromium is allowed, download it once
+        and try again.
+        """
+        preferred = (os.environ.get("SYNERGY_BROWSER") or "").strip().lower()
+        order = (preferred,) if preferred in BROWSER_ORDER else BROWSER_ORDER
+        errors = []
+        for name in order:
+            try:
+                if name == "chromium":
+                    browser = await self._pw.chromium.launch(headless=self._headless)
+                else:
+                    browser = await self._pw.chromium.launch(channel=name, headless=self._headless)
+                self.browser_name = name
+                return browser
+            except Exception as e:  # noqa: BLE001 — not installed / can't start: try the next
+                errors.append(f"{name}: {str(e).splitlines()[0][:120]}")
+        if "chromium" not in order:
+            raise RuntimeError("Could not start the login browser (" + "; ".join(errors) + ")")
+        await asyncio.to_thread(install_playwright_chromium)
+        browser = await self._pw.chromium.launch(headless=self._headless)
+        self.browser_name = "chromium"
+        return browser
 
     def _on_request(self, request):
         """Sniff Aura POSTs to harvest the authenticated session token + context.

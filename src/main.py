@@ -860,9 +860,6 @@ app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 
 if __name__ == "__main__":
-    import uvicorn
-    import webbrowser
-    import threading
+    from .cli import main as run
 
-    threading.Timer(1.0, webbrowser.open, args=["http://127.0.0.1:8000"]).start()
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    run()

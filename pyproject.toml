@@ -13,6 +13,9 @@ dependencies = [
     "uvicorn[standard]>=0.41.0",
 ]
 
+[project.scripts]
+synergy-analyser = "synergy_analyser.cli:main"
+
 [build-system]
 requires = ["setuptools>=75.0"]
 build-backend = "setuptools.build_meta"
