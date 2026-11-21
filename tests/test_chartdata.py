@@ -5,8 +5,11 @@ from datetime import datetime
 import pytest
 
 from synergy_analyser.chartdata import (
+    UNKNOWN_TARIFF,
     apply_rates,
+    count_unknown,
     parse_halfhourly_response,
+    unknown_kwh,
     unpriced_consumption,
 )
 
@@ -129,3 +132,87 @@ def test_unpriced_consumption_ignores_periods_without_usage():
     assert unpriced_consumption(parse_halfhourly_response(HALF), {
         "PEAK": 1.0, "OFF_PEAK": 1.0, "OFF_PEAK(AM)": 1.0, "OVERNIGHT": 1.0, "SUPER_OFFPEAK": 1.0,
     }) == {}
+
+
+# --- error codes ---
+
+@pytest.mark.parametrize("payload", [
+    {"ChartData": {"errorCode": "INVOKE-500", "error": "Server error"}},
+    {"IPResult": {"ChartData": {"errorCode": "INVOKE-500"}}},
+    {"ChartData": {"errorCode": "INVOKE-200", "error": "Something failed"}},
+    {"ChartData": {"error": "Something failed"}},
+])
+def test_missing_response_with_error_code_raises(payload):
+    with pytest.raises(ValueError, match="error instead of interval data"):
+        parse_halfhourly_response(payload)
+
+
+def test_error_code_message_names_the_code_and_is_truncated():
+    with pytest.raises(ValueError) as err:
+        parse_halfhourly_response({"ChartData": {"errorCode": "INVOKE-500", "error": "x" * 5000}})
+    msg = str(err.value)
+    assert "INVOKE-500" in msg
+    assert len(msg) < 400
+
+
+@pytest.mark.parametrize("chart", [
+    {"errorCode": "INVOKE-200", "error": "OK"},
+    {"errorCode": "INVOKE-200"},
+    {"error": "OK"},
+    {"errorCode": "", "error": None},
+])
+def test_missing_response_with_success_codes_is_zero_intervals(chart):
+    assert parse_halfhourly_response({"ChartData": chart}) == []
+
+
+def test_error_code_ignored_when_rows_present():
+    payload = {"ChartData": {"errorCode": "INVOKE-500", "Response": [
+        {"VAL_DAY": "2026-08-02", "VAL_TIME": "0000", "PEAK": "0.5"},
+    ]}}
+    assert len(parse_halfhourly_response(payload)) == 1
+
+
+# --- unrecognised and multi-column rows ---
+
+def _rows(*rows):
+    return {"ChartData": {"errorCode": "INVOKE-200", "error": "OK", "Response": [
+        {"VAL_DAY": "2026-08-02", "BillingStatus": "Billed", **r} for r in rows
+    ]}}
+
+
+def test_unrecognised_tariff_column_is_summed_as_unknown_usage():
+    intervals = parse_halfhourly_response(_rows(
+        {"VAL_TIME": "0000", "NEW_PERIOD": "0.4", "VAL_SOLAR": "0.1", "Total_Cost": "9.9"},
+        {"VAL_TIME": "0030", "NEW_PERIOD": "0.2", "OTHER_PERIOD": "0.3", "METER_ID": "123"},
+        {"VAL_TIME": "0100", "PEAK": "0.7"},
+        {"VAL_TIME": "0130", "VAL_SOLAR": "0.5"},  # no usage column at all
+    ))
+    unknown = [i for i in intervals if i["tariff_name"] == UNKNOWN_TARIFF]
+    assert len(unknown) == 3
+    # Solar, cost and meter metadata are never counted as usage.
+    assert intervals[0]["consumption_kwh"] == pytest.approx(0.4)
+    assert intervals[0]["export_kwh"] == pytest.approx(0.1)
+    assert intervals[1]["consumption_kwh"] == pytest.approx(0.5)
+    assert intervals[2]["tariff_name"] == "PEAK"
+    assert intervals[3]["consumption_kwh"] == 0.0
+    # Only rows with actual unknown usage are reported.
+    assert count_unknown(intervals) == 2
+    assert unknown_kwh(intervals) == pytest.approx(0.9)
+
+
+def test_count_unknown_is_zero_for_the_real_fixture():
+    intervals = parse_halfhourly_response(HALF)
+    assert count_unknown(intervals) == 0
+    assert unknown_kwh(intervals) == 0
+
+
+def test_multi_column_row_labelled_by_largest_value():
+    intervals = parse_halfhourly_response(_rows(
+        {"VAL_TIME": "0000", "PEAK": "0.1", "OFF_PEAK": "0.3"},
+        # Ties go to the first column in TARIFF_COLUMNS order, whatever the row order.
+        {"VAL_TIME": "0030", "OVERNIGHT": "0.2", "PEAK": "0.2"},
+    ))
+    assert intervals[0]["tariff_name"] == "OFF_PEAK"
+    assert intervals[0]["consumption_kwh"] == pytest.approx(0.4)
+    assert intervals[1]["tariff_name"] == "PEAK"
+    assert intervals[1]["consumption_kwh"] == pytest.approx(0.4)

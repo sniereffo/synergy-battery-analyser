@@ -133,3 +133,15 @@ def test_parse_ip_result_truncates_huge_errors():
     with pytest.raises(RuntimeError) as err:
         parse_ip_result({"actions": [], "event": huge})
     assert len(str(err.value)) < 400
+
+
+@pytest.mark.parametrize("action", [
+    {"state": "SUCCESS"},
+    {"state": "SUCCESS", "error": [], "huge": "x" * 10_000},
+    None,
+    "not-a-dict",
+])
+def test_parse_ip_result_missing_return_value_raises(action):
+    with pytest.raises(RuntimeError, match="no returnValue") as err:
+        parse_ip_result({"actions": [action]})
+    assert len(str(err.value)) < 400

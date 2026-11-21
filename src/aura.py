@@ -112,8 +112,12 @@ def parse_ip_result(aura_response: dict) -> dict:
     if not aura_response.get("actions"):
         raise RuntimeError(f"Aura response had no actions: {_trunc(aura_response)}")
     action = aura_response["actions"][0]
+    if not isinstance(action, dict):
+        raise RuntimeError(f"Aura action had no returnValue: {_trunc(action)}")
     if action.get("state") and action["state"] != "SUCCESS":
         raise RuntimeError(f"Aura action failed: {_trunc(action.get('error'))}")
+    if "returnValue" not in action:
+        raise RuntimeError(f"Aura action had no returnValue: {_trunc(action)}")
     rv = action["returnValue"]
     # IP calls wrap the payload again as returnValue -> a JSON string; direct
     # controller calls may return the object directly. Handle both.
