@@ -904,7 +904,7 @@ async function runAnalysis() {
     btn.disabled = true;
     btnText.textContent = 'Analysing...';
     spinner.classList.remove('hidden');
-    showProgressModal();
+    showProgressModal({ live: !cachedFile });
 
     try {
         const res = await fetch('/api/analyse', {
@@ -1003,9 +1003,20 @@ function pollAnalysis() {
     });
 }
 
-function showProgressModal() {
+// `live`: fetching from Synergy (shows day-by-day progress). Otherwise the
+// analysis runs on a saved dataset, which takes a few seconds and has no
+// fetch to track, so the progress bar is hidden.
+let progressIsLive = false;
+
+function showProgressModal({ live = false } = {}) {
+    progressIsLive = live;
+    ['progressTrack', 'progressCount', 'progressDay'].forEach(id =>
+        document.getElementById(id).classList.toggle('hidden', !live));
+    document.getElementById('progressHint').textContent = live
+        ? 'Fetching your half-hourly usage from Synergy in monthly batches. Longer ranges take a little longer — you can leave this running.'
+        : 'Analysing your saved data and comparing battery sizes. No connection to Synergy is needed — this takes a few seconds.';
     document.getElementById('progressModal').classList.remove('hidden');
-    updateProgressModal({ phase: 'Starting…', done: 0, total: 0 });
+    updateProgressModal({ phase: live ? 'Connecting to Synergy…' : 'Analysing saved data…', done: 0, total: 0 });
 }
 
 function hideProgressModal() {
@@ -1013,7 +1024,10 @@ function hideProgressModal() {
 }
 
 function updateProgressModal(job) {
-    document.getElementById('progressPhase').textContent = job.phase || 'Working…';
+    let phase = job.phase || 'Working…';
+    // The backend's first step is "Starting…"; say what's actually happening.
+    if (phase === 'Starting…') phase = progressIsLive ? 'Connecting to Synergy…' : 'Analysing saved data…';
+    document.getElementById('progressPhase').textContent = phase;
     const total = job.total || 0;
     const done = job.done || 0;
     const pct = total ? Math.round((done / total) * 100) : 0;

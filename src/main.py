@@ -569,7 +569,7 @@ async def _do_analysis(req: AnalyseRequest, job: dict) -> dict:
 
     # 1. Obtain raw intervals (timestamp, consumption_kwh, export_kwh, tariff_name)
     if req.cached_file:
-        job["phase"] = "Loading cached data…"
+        job["phase"] = "Loading saved data…"
         all_intervals, cached_tariff = _load_cached(req.cached_file)
         cache_name = Path(req.cached_file).name
         # The file's own label describes the data; the request's is a fallback.
