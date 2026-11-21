@@ -20,10 +20,10 @@ def _t(s: str) -> time:
 
 
 # name: human label; key: rate-dict key; windows: [(start, end)] end-exclusive,
-# end < start wraps midnight, ("00:00","00:00") means all day.
+# end < start wraps midnight, ("00:00","00:00") means all day. Public plan-page
+# slugs live in rates.py (the single source of truth for scraping).
 PLANS: dict[str, dict] = {
     "Electric Vehicle Add On": {
-        "slug": "Electric-Vehicle-Add-On",
         "periods": [
             {"name": "Peak", "key": "PEAK", "windows": [("15:00", "21:00")]},
             {"name": "Off Peak (AM)", "key": "OFF_PEAK(AM)", "windows": [("06:00", "09:00")]},
@@ -33,7 +33,6 @@ PLANS: dict[str, dict] = {
         ],
     },
     "Midday Saver": {
-        "slug": "Midday-Saver",
         "periods": [
             {"name": "Peak", "key": "PEAK", "windows": [("15:00", "21:00")]},
             {"name": "Super Off Peak", "key": "SUPER_OFFPEAK", "windows": [("09:00", "15:00")]},
@@ -41,7 +40,6 @@ PLANS: dict[str, dict] = {
         ],
     },
     "Home Plan A1": {
-        "slug": "Home-Plan-A1",
         "periods": [
             {"name": "Anytime", "key": "PEAK", "windows": [("00:00", "00:00")]},
         ],
@@ -64,7 +62,26 @@ def available_plans() -> list[str]:
 
 
 def default_plan_for_tariff(tariff_label: str | None) -> str | None:
-    return PLAN_BY_TARIFF.get((tariff_label or "").strip().upper())
+    """Plan id for a Synergy tariff label or a plan name (case-insensitive)."""
+    key = (tariff_label or "").strip().upper()
+    if not key:
+        return None
+    if key in PLAN_BY_TARIFF:
+        return PLAN_BY_TARIFF[key]
+    return next((pid for pid in PLANS if pid.upper() == key), None)
+
+
+def plan_periods(plan_id: str) -> list[dict]:
+    """The plan's periods as [{name, key}] (key = API period column)."""
+    return [{"name": p["name"], "key": p["key"]} for p in PLANS[plan_id]["periods"]]
+
+
+def plan_details() -> dict[str, dict]:
+    """Per-plan period list and whether it is a flat (single-rate) plan."""
+    return {
+        pid: {"periods": plan_periods(pid), "flat": len(PLANS[pid]["periods"]) == 1}
+        for pid in PLANS
+    }
 
 
 def _prepared_periods(plan_id: str) -> list[dict]:

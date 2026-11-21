@@ -23,15 +23,23 @@ _FEED_IN_PEAK_END = time(21, 0)
 
 def _extract_rows(response: dict) -> list[dict]:
     """Accept either the inner IPResult, a {"IPResult": ...} wrapper, or the
-    ChartData block itself, and return the list of interval rows."""
+    ChartData block itself, and return the list of interval rows.
+
+    A payload with no "Response" array (e.g. a range before the move-in date,
+    or simply no data yet) yields zero rows rather than an error.
+    """
     node = response
-    if "IPResult" in node:
+    if not isinstance(node, dict):
+        raise ValueError(f"Unexpected ChartData payload type: {type(node).__name__}")
+    if isinstance(node.get("IPResult"), dict):
         node = node["IPResult"]
-    if "ChartData" in node:
+    if isinstance(node.get("ChartData"), dict):
         node = node["ChartData"]
     rows = node.get("Response")
+    if rows is None:
+        return []
     if not isinstance(rows, list):
-        raise ValueError("No interval Response array found in ChartData payload")
+        raise ValueError("ChartData 'Response' is not a list of interval rows")
     return rows
 
 
@@ -76,9 +84,8 @@ def apply_rates(
 
     `rates` maps tariff-period name (the API column name) to c/kWh. Unknown
     periods default to 0.0 rather than raising, so a partial/misconfigured rate
-    table degrades gracefully. Returns the same dicts, enriched in place, and
-    records any unknown period names on each affected interval's tariff rate of
-    0.0 (surfaced by the caller via the returned list).
+    table degrades gracefully; use `unpriced_consumption()` to report them.
+    Returns the same dicts, enriched in place.
     """
     for interval in intervals:
         rate = rates.get(interval["tariff_name"], 0.0)
@@ -90,10 +97,12 @@ def apply_rates(
     return intervals
 
 
-def unknown_periods(intervals: list[dict], rates: dict[str, float]) -> set[str]:
-    """Return tariff-period names that appear in the data but have no rate."""
-    return {
-        i["tariff_name"]
-        for i in intervals
-        if i["tariff_name"] != "UNKNOWN" and i["tariff_name"] not in rates
-    }
+def unpriced_consumption(intervals: list[dict], rates: dict[str, float]) -> dict[str, float]:
+    """Return {tariff_name: kWh} for periods with consumption but no (or a 0)
+    rate, so the caller can warn that this usage was priced at 0c."""
+    unpriced: dict[str, float] = {}
+    for i in intervals:
+        name = i["tariff_name"]
+        if i["consumption_kwh"] > 0 and not rates.get(name):
+            unpriced[name] = unpriced.get(name, 0.0) + i["consumption_kwh"]
+    return unpriced

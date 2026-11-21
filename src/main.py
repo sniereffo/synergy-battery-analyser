@@ -3,20 +3,40 @@ from datetime import date, datetime
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 from pathlib import Path
 import asyncio
 import json
+import os
+import re
 import sys
 
 from .browser_client import SynergyBrowserClient, NotLoggedIn
-from .chartdata import parse_halfhourly_response, apply_rates  # noqa: F401 (parse used via client)
-from .models import RATE_SCHEDULES, EnergyPlan, plan_for_tariff, display_name, DEFAULT_SUPPLY_CHARGE_CENTS
+from .chartdata import apply_rates, unpriced_consumption
+from .models import (
+    EnergyPlan, plan_for_tariff, display_name, rate_schedule_for,
+    rate_schedules_with_aliases, DEFAULT_SUPPLY_CHARGE_CENTS,
+)
 from .rates import fetch_plan_rates
 from .plans import (
     PLANS, available_plans, default_plan_for_tariff, assign_periods, rate_map_for_plan,
+    plan_periods, plan_details,
 )
 from .battery import simulate_battery
+
+
+MAX_ERROR_CHARS = 300
+NOT_LOGGED_IN_MSG = "Not logged in. Open the Synergy login first."
+SESSION_EXPIRED_MSG = (
+    "Your Synergy session has expired or the login window was closed — "
+    "please log in again."
+)
+
+
+def _truncate(text, limit: int = MAX_ERROR_CHARS) -> str:
+    """Bound upstream/exception text before it lands in an error message."""
+    text = str(text)
+    return text if len(text) <= limit else text[:limit] + "…"
 
 
 def _idle_job() -> dict:
@@ -28,7 +48,21 @@ def _idle_job() -> dict:
         "current_day": None,
         "result": None,
         "error": None,
+        "error_code": None,  # "not_logged_in" when the Synergy session is gone
     }
+
+
+def _reset_session_state():
+    """Forget per-login state (services, window-closed flag)."""
+    app.state.services = []
+    app.state.login_finalized = False
+
+
+async def _close_quietly(client: SynergyBrowserClient):
+    try:
+        await client.close()
+    except Exception:  # noqa: BLE001 — the browser may already be gone
+        pass
 
 
 @asynccontextmanager
@@ -38,10 +72,12 @@ async def lifespan(app: FastAPI):
     app.state.synergy = None
     app.state.services = []
     app.state.login_finalized = False
+    app.state.auth_lock = asyncio.Lock()
     app.state.job = _idle_job()
+    app.state.job_task = None  # strong ref so the background job isn't GC'd
     yield
     if app.state.synergy is not None:
-        await app.state.synergy.close()
+        await _close_quietly(app.state.synergy)
 
 
 app = FastAPI(title="Synergy Battery Feasibility Analyser", lifespan=lifespan)
@@ -51,7 +87,10 @@ if getattr(sys, "frozen", False):
 else:
     static_dir = Path(__file__).parent / "static"
 
-DATA_DIR = Path("data")
+# Cached interval data. Override with the SYNERGY_DATA_DIR env var; otherwise
+# "data/" relative to the current working directory (run from the repo root).
+# Referenced at call time, so tests can monkeypatch it.
+DATA_DIR = Path(os.environ.get("SYNERGY_DATA_DIR") or "data")
 
 
 # --- Request models ---
@@ -59,12 +98,17 @@ DATA_DIR = Path("data")
 class AnalyseRequest(BaseModel):
     service_id: str | None = None
     tariff_label: str | None = None
-    plan_id: str | None = None   # which plan to project; defaults to the user's own
-    start_date: date
-    end_date: date
+    # Plan to project. None = the plan matching the data's own tariff label,
+    # else (unknown label) price the periods as labelled in the data.
+    plan_id: str | None = None
+    # Live fetch: the range to fetch (both required). Cached file: optional
+    # inclusive filter; omitted = all cached data.
+    start_date: date | None = None
+    end_date: date | None = None
     battery_capacity_kwh: float
     battery_cost_dollars: float | None = None
     inverter_capacity_kw: float = 5.0
+    round_trip_efficiency: float = Field(0.9, gt=0, le=1)
     grid_topup: bool = False
     feed_in_peak_cents: float = 10.0
     feed_in_off_peak_cents: float = 2.0
@@ -74,7 +118,7 @@ class AnalyseRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_dates(self):
-        if self.end_date < self.start_date:
+        if self.start_date and self.end_date and self.end_date < self.start_date:
             raise ValueError("end_date must be on or after start_date")
         return self
 
@@ -88,21 +132,25 @@ def health():
 
 @app.get("/api/rate-schedules")
 def list_rate_schedules():
-    return RATE_SCHEDULES
+    """Built-in prefill schedules, keyed by plan id and by known tariff label."""
+    return rate_schedules_with_aliases()
 
 
 @app.get("/api/rates")
 async def get_rates(tariff: str | None = None):
-    """Current rates for a tariff: live from Synergy's plan page if available,
-    otherwise the built-in prefill defaults."""
+    """Current rates for a tariff label or plan name: live from Synergy's plan
+    page if available, otherwise the built-in prefill defaults."""
+    sched = rate_schedule_for(tariff)
     scraped = await fetch_plan_rates(tariff)
     if scraped and scraped.get("rates"):
+        supply = scraped.get("supply_charge_cents")
+        if supply is None:
+            supply = sched.get("supply_charge_cents")
         return {
             "source": "synergy",
-            "supply_charge_cents": scraped["supply_charge_cents"],
+            "supply_charge_cents": supply,
             "rates": scraped["rates"],
         }
-    sched = RATE_SCHEDULES.get((tariff or "").strip().upper())
     if sched:
         return {
             "source": "default",
@@ -114,26 +162,80 @@ async def get_rates(tariff: str | None = None):
 
 @app.get("/api/plans")
 def list_plans(tariff: str | None = None):
-    """Available plans for projection, plus which one matches this tariff."""
-    return {"plans": available_plans(), "default": default_plan_for_tariff(tariff)}
+    """Available plans for projection, which one matches this tariff, and each
+    plan's periods (keys = API period columns) / flat-rate flag."""
+    return {
+        "plans": available_plans(),
+        "default": default_plan_for_tariff(tariff),
+        "details": plan_details(),
+    }
+
+
+def _cache_file_info(path: Path) -> dict:
+    info = {"name": path.name, "tariff_label": None, "start": None, "end": None, "days": 0}
+    try:
+        payload = json.loads(path.read_text())
+        intervals = payload["intervals"] if isinstance(payload, dict) else payload
+        dates = sorted({str(i["timestamp"])[:10] for i in intervals})
+    except (OSError, ValueError, KeyError, TypeError):
+        return info  # unreadable / foreign JSON: still list it by name
+    if isinstance(payload, dict):
+        info["tariff_label"] = payload.get("tariff_label")
+    if dates:
+        info.update(start=dates[0], end=dates[-1], days=len(dates))
+    return info
 
 
 @app.get("/api/data/files")
 def list_data_files():
+    """Cached interval files: [{name, tariff_label, start, end, days}]."""
     if not DATA_DIR.exists():
         return []
-    return sorted(f.name for f in DATA_DIR.glob("*.json"))
+    return [_cache_file_info(f) for f in sorted(DATA_DIR.glob("*.json"), key=lambda f: f.name)]
 
 
 # --- Auth (browser-assisted) ---
 
 @app.post("/api/auth/open-login")
 async def open_login():
-    """Launch the browser window for the user to log in to Synergy."""
-    if app.state.synergy is None:
-        app.state.synergy = SynergyBrowserClient(headless=False)
-        await app.state.synergy.start()
+    """Launch the browser window for the user to log in to Synergy.
+
+    If a previous window was abandoned (closed, or its session expired) it is
+    discarded and a fresh one started.
+    """
+    async with app.state.auth_lock:
+        client: SynergyBrowserClient | None = app.state.synergy
+        if client is not None and client.logged_in:
+            return {"status": "logged_in"}
+        if client is not None:
+            app.state.synergy = None
+            await _close_quietly(client)
+        _reset_session_state()
+
+        new_client = SynergyBrowserClient(headless=False)
+        try:
+            await new_client.start()
+        except Exception as e:  # noqa: BLE001 — report any launch failure
+            await _close_quietly(new_client)
+            raise HTTPException(
+                500,
+                f"Could not open the login browser: {_truncate(e)}. If Chromium "
+                "isn't installed yet, run: uv run playwright install chromium",
+            )
+        app.state.synergy = new_client
     return {"status": "browser_opened"}
+
+
+@app.post("/api/auth/reset")
+async def auth_reset():
+    """Close any browser/session and forget login state."""
+    async with app.state.auth_lock:
+        client = app.state.synergy
+        app.state.synergy = None
+        _reset_session_state()
+        if client is not None:
+            await _close_quietly(client)
+    return {"status": "reset"}
 
 
 @app.get("/api/auth/status")
@@ -142,34 +244,61 @@ async def auth_status():
 
     On the first status check after login we fetch the service list and close
     the visible browser window — the session persists in the browser context.
+    `browser_open` is true while a login window is open but not yet logged in.
     """
     client: SynergyBrowserClient | None = app.state.synergy
     if client is None or not client.logged_in:
-        return {"logged_in": False, "services": []}
-    if not app.state.services:
-        app.state.services = await client.get_services()
-    if not app.state.login_finalized:
-        await client.finalize_login()
-        app.state.login_finalized = True
-    return {"logged_in": True, "services": app.state.services}
+        _reset_session_state()
+        browser_open = client is not None and bool(getattr(client, "window_open", False))
+        return {"logged_in": False, "services": [], "browser_open": browser_open}
+    try:
+        if not app.state.services:
+            app.state.services = await client.get_services()
+        if not app.state.login_finalized:
+            await client.finalize_login()
+            app.state.login_finalized = True
+    except NotLoggedIn:
+        _reset_session_state()
+        return {
+            "logged_in": False, "services": [],
+            "browser_open": bool(getattr(client, "window_open", False)),
+        }
+    return {"logged_in": True, "services": app.state.services, "browser_open": False}
 
 
 # --- Analysis ---
 
-def _cache_path(req: AnalyseRequest) -> Path:
-    return DATA_DIR / f"{req.start_date}_to_{req.end_date}.json"
+def _cache_path(start: date, end: date, service_id: str | None) -> Path:
+    name = f"{start}_to_{end}"
+    safe_sid = re.sub(r"[^A-Za-z0-9_-]", "", service_id or "")
+    if safe_sid:
+        name += f"_{safe_sid}"
+    return DATA_DIR / f"{name}.json"
 
 
 def _load_cached(name: str) -> tuple[list[dict], str | None]:
+    """Load a cached file (any naming scheme) -> (sorted intervals, tariff label)."""
     path = DATA_DIR / Path(name).name  # sanitise
     if not path.exists():
-        raise HTTPException(404, f"Cached file not found: {name}")
-    payload = json.loads(path.read_text())
-    intervals = payload["intervals"] if isinstance(payload, dict) else payload
-    for i in intervals:
-        i["timestamp"] = datetime.fromisoformat(i["timestamp"])
+        raise HTTPException(404, f"Cached file not found: {_truncate(name, 100)}")
+    try:
+        payload = json.loads(path.read_text())
+        intervals = payload["intervals"] if isinstance(payload, dict) else payload
+        for i in intervals:
+            i["timestamp"] = datetime.fromisoformat(i["timestamp"])
+    except (ValueError, KeyError, TypeError) as e:
+        raise HTTPException(400, f"Cached file {path.name} is unreadable: {_truncate(e)}")
+    intervals.sort(key=lambda i: i["timestamp"])
     tariff = payload.get("tariff_label") if isinstance(payload, dict) else None
     return intervals, tariff
+
+
+def _filter_dates(intervals: list[dict], start: date | None, end: date | None) -> list[dict]:
+    return [
+        i for i in intervals
+        if (start is None or i["timestamp"].date() >= start)
+        and (end is None or i["timestamp"].date() <= end)
+    ]
 
 
 @app.post("/api/analyse")
@@ -178,10 +307,13 @@ async def analyse(req: AnalyseRequest):
     runs in the background; poll /api/analyse/progress for status + result."""
     if app.state.job["status"] == "running":
         raise HTTPException(409, "An analysis is already running.")
+    if not req.cached_file and (req.start_date is None or req.end_date is None):
+        raise HTTPException(400, "start_date and end_date are required for a live fetch.")
     app.state.job = _idle_job()
     app.state.job["status"] = "running"
     app.state.job["phase"] = "Starting…"
-    asyncio.create_task(_run_analysis(req))
+    # Keep a reference: the event loop only holds weak refs to tasks.
+    app.state.job_task = asyncio.create_task(_run_analysis(req))
     return {"status": "started"}
 
 
@@ -197,30 +329,58 @@ async def _run_analysis(req: AnalyseRequest):
         job["result"] = result
         job["phase"] = "Done"
         job["status"] = "done"
+    except NotLoggedIn as e:
+        job["error"] = str(e) or SESSION_EXPIRED_MSG
+        job["error_code"] = "not_logged_in"
+        job["status"] = "error"
+        _reset_session_state()
     except HTTPException as e:
         job["error"] = e.detail
         job["status"] = "error"
     except Exception as e:  # noqa: BLE001 — surface any failure to the UI
-        job["error"] = str(e)
+        job["error"] = _truncate(e) or type(e).__name__
         job["status"] = "error"
 
 
 async def _do_analysis(req: AnalyseRequest, job: dict) -> dict:
+    warnings: list[str] = []
+    cache_name: str | None = None  # file the analysed data lives in (for re-runs)
+
     # 1. Obtain raw intervals (timestamp, consumption_kwh, export_kwh, tariff_name)
     if req.cached_file:
         job["phase"] = "Loading cached data…"
-        intervals, cached_tariff = _load_cached(req.cached_file)
-        tariff_label = req.tariff_label or cached_tariff
-        job["total"] = job["done"] = (req.end_date - req.start_date).days + 1
+        all_intervals, cached_tariff = _load_cached(req.cached_file)
+        cache_name = Path(req.cached_file).name
+        # The file's own label describes the data; the request's is a fallback.
+        tariff_label = cached_tariff or req.tariff_label
+        if not all_intervals:
+            raise HTTPException(400, "The cached file contains no interval data.")
+        file_start = all_intervals[0]["timestamp"].date()
+        file_end = all_intervals[-1]["timestamp"].date()
+        intervals = _filter_dates(all_intervals, req.start_date, req.end_date)
+        req_start = req.start_date or file_start
+        req_end = req.end_date or file_end
+        if not intervals:
+            raise HTTPException(
+                400,
+                f"No cached data between {req_start} and {req_end} "
+                f"(this file covers {file_start} to {file_end}).",
+            )
+        if req_start < file_start or req_end > file_end:
+            warnings.append(
+                f"Requested {req_start} to {req_end}, but the cached data only covers "
+                f"{file_start} to {file_end}; only the overlapping days were analysed."
+            )
     else:
         client: SynergyBrowserClient | None = app.state.synergy
         if client is None or not client.logged_in:
-            raise HTTPException(401, "Not logged in. Open the Synergy login first.")
+            raise NotLoggedIn(NOT_LOGGED_IN_MSG)
         if not req.service_id:
             raise HTTPException(400, "service_id is required for a live fetch.")
 
         job["phase"] = "Fetching usage from Synergy…"
-        job["total"] = (req.end_date - req.start_date).days + 1
+        requested_days = (req.end_date - req.start_date).days + 1
+        job["total"] = requested_days
 
         def progress(done, total, day):
             job["done"] = done
@@ -232,50 +392,104 @@ async def _do_analysis(req: AnalyseRequest, job: dict) -> dict:
                 req.service_id, req.start_date, req.end_date, progress=progress
             )
         except NotLoggedIn:
-            raise HTTPException(401, "Not logged in. Open the Synergy login first.")
+            raise NotLoggedIn(SESSION_EXPIRED_MSG) from None
 
         tariff_label = req.tariff_label
         if not tariff_label:
             svc = next((s for s in app.state.services if s["service_id"] == req.service_id), None)
             tariff_label = svc["tariff"] if svc else None
 
-        DATA_DIR.mkdir(exist_ok=True)
-        _cache_path(req).write_text(json.dumps({
+        if not intervals:
+            raise HTTPException(
+                400, f"Synergy returned no interval data for {req.start_date} to {req.end_date}."
+            )
+
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        cache_path = _cache_path(req.start_date, req.end_date, req.service_id)
+        cache_name = cache_path.name
+        cache_path.write_text(json.dumps({
             "tariff_label": tariff_label,
+            "service_id": req.service_id,
             "intervals": [{**i, "timestamp": i["timestamp"].isoformat()} for i in intervals],
         }, indent=2))
 
-    if not intervals:
-        raise HTTPException(400, "No interval data returned for that date range.")
+        fetched_days = len({i["timestamp"].date() for i in intervals})
+        if fetched_days < requested_days:
+            warnings.append(
+                f"Synergy returned data for only {fetched_days} of the {requested_days} "
+                f"requested days ({intervals[0]['timestamp'].date()} to "
+                f"{intervals[-1]['timestamp'].date()}); results cover only those days."
+            )
+
+    # Days actually present drive the supply charge and payback annualisation.
+    data_dates = sorted({i["timestamp"].date() for i in intervals})
+    num_days = len(data_dates)
+    data_start, data_end = data_dates[0], data_dates[-1]
+    span_days = (data_end - data_start).days + 1
+    if req.cached_file:
+        job["total"] = job["done"] = num_days
+        if num_days < span_days:
+            warnings.append(
+                f"The data has gaps: only {num_days} of the {span_days} days between "
+                f"{data_start} and {data_end} have readings."
+            )
 
     # 2. Choose the plan to project. A known plan re-bins each slot into that
     #    plan's time-of-use windows (enabling "what if I switched plans?"); an
     #    unknown tariff falls back to the periods the data already carries.
     job["phase"] = "Pricing and simulating…"
-    plan_id = req.plan_id or default_plan_for_tariff(tariff_label)
+    if req.plan_id:
+        plan_id = default_plan_for_tariff(req.plan_id)
+        if plan_id is None:
+            raise HTTPException(400, f"Unknown plan: {_truncate(req.plan_id, 100)}")
+    else:
+        plan_id = default_plan_for_tariff(tariff_label)
+    overrides = req.rate_overrides or {}
 
     if plan_id in PLANS:
-        # Rates keyed by API period column: overrides from the UI, else scraped,
-        # else built-in prefill.
-        if req.rate_overrides:
-            rates_by_key = dict(req.rate_overrides)
-        else:
+        # Rates keyed by API period column: built-in prefill, refreshed from
+        # Synergy's site when reachable, with the user's overrides on top.
+        prefill = rate_schedule_for(plan_id)
+        base_rates = dict(prefill.get("rates", {}))
+        base_supply = prefill.get("supply_charge_cents")
+        rates_source = "default"
+        plan_keys = {p["key"] for p in PLANS[plan_id]["periods"]}
+        if not plan_keys <= overrides.keys() or req.supply_charge_cents is None:
             scraped = await fetch_plan_rates(plan_id)
-            rates_by_key = (scraped or {}).get("rates") or \
-                RATE_SCHEDULES.get(plan_id.upper(), {}).get("rates", {})
+            if scraped and scraped.get("rates"):
+                base_rates.update(scraped["rates"])
+                rates_source = "synergy"
+                if scraped.get("supply_charge_cents") is not None:
+                    base_supply = scraped["supply_charge_cents"]
+        if plan_keys <= overrides.keys():
+            rates_source = "override"
+        rates_by_key = {**base_rates, **overrides}
         assign_periods(intervals, plan_id)
         rate_map = rate_map_for_plan(plan_id, rates_by_key)
         supply = req.supply_charge_cents
         if supply is None:
-            supply = RATE_SCHEDULES.get(plan_id.upper(), {}).get(
-                "supply_charge_cents", DEFAULT_SUPPLY_CHARGE_CENTS)
+            supply = base_supply if base_supply is not None else DEFAULT_SUPPLY_CHARGE_CENTS
         plan = EnergyPlan(id=plan_id, name=plan_id, supply_charge_cents=supply, rates=rate_map)
+        periods = plan_periods(plan_id)
     else:
+        # Data-driven fallback: price the periods exactly as Synergy labelled them.
         periods_present = sorted({i["tariff_name"] for i in intervals})
+        scraped = None
+        if not set(periods_present) <= overrides.keys() or req.supply_charge_cents is None:
+            scraped = await fetch_plan_rates(tariff_label)  # e.g. plans we can't re-bin
+        scraped = scraped or {}
         plan = plan_for_tariff(
             tariff_label, periods_present,
             supply_charge_cents=req.supply_charge_cents,
-            rate_overrides=req.rate_overrides,
+            rate_overrides=overrides,
+            base_rates=scraped.get("rates"),
+            base_supply_cents=scraped.get("supply_charge_cents"),
+        )
+        rates_source = "synergy" if scraped.get("rates") else "default"
+        periods = []
+        warnings.append(
+            f"Tariff '{tariff_label or 'unknown'}' doesn't match a known plan, so periods "
+            "are priced as labelled in the data — check the rates."
         )
 
     # 3. Price + simulate
@@ -284,12 +498,15 @@ async def _do_analysis(req: AnalyseRequest, job: dict) -> dict:
         feed_in_peak_cents=req.feed_in_peak_cents,
         feed_in_off_peak_cents=req.feed_in_off_peak_cents,
     )
+    for name, kwh in sorted(unpriced_consumption(priced, plan.rates).items()):
+        warnings.append(f"No rate for '{display_name(name)}' — {kwh:.1f} kWh priced at 0c")
+
     battery_result = simulate_battery(
-        priced, req.battery_capacity_kwh, req.grid_topup, req.inverter_capacity_kw
+        priced, req.battery_capacity_kwh, req.grid_topup, req.inverter_capacity_kw,
+        round_trip_efficiency=req.round_trip_efficiency,
     )
 
     # 4. Summarise
-    num_days = (req.end_date - req.start_date).days + 1
     total_supply_cost = num_days * plan.supply_charge_cents
     total_consumption = sum(e["consumption_kwh"] for e in battery_result)
     total_export = sum(e["export_kwh"] for e in battery_result)
@@ -310,10 +527,13 @@ async def _do_analysis(req: AnalyseRequest, job: dict) -> dict:
 
     return {
         "plan": {
+            "id": plan.id,
             "name": plan.name,
             "supply_charge_cents": plan.supply_charge_cents,
             "rates": {display_name(k): v for k, v in plan.rates.items()},
             "rates_by_period": plan.rates,
+            "periods": periods,
+            "rates_source": rates_source,  # synergy | default | override
         },
         "summary": {
             "total_consumption_kwh": round(total_consumption, 2),
@@ -324,8 +544,12 @@ async def _do_analysis(req: AnalyseRequest, job: dict) -> dict:
             "export_credits_dollars": round(total_export_credits / 100, 2),
             "payback_years": payback_years,
             "num_days": num_days,
+            "data_start": data_start.isoformat(),
+            "data_end": data_end.isoformat(),
             "supply_cost_dollars": round(total_supply_cost / 100, 2),
         },
+        "warnings": warnings,
+        "cache_file": cache_name,
         "intervals": [
             {
                 "timestamp": e["timestamp"].isoformat(),
@@ -334,6 +558,7 @@ async def _do_analysis(req: AnalyseRequest, job: dict) -> dict:
                 "tariff_name": e["tariff_name"],
                 "rate_cents": e["rate_cents"],
                 "cost_cents": round(e["cost_cents"], 4),
+                "export_credit_cents": round(e["export_credit_cents"], 4),
                 "battery_kwh": round(e["battery_kwh"], 4),
                 "discharge_kwh": round(e["discharge_kwh"], 4),
                 "savings_cents": round(e["savings_cents"], 4),

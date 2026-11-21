@@ -14,8 +14,9 @@ import httpx
 
 PLANS_BASE = "https://www.synergy.net.au/Your-home/Energy-plans/"
 
-# Map the tariff label Synergy returns in getLinkedServices ("Tarrif") to the
-# slug of its public plan page.
+# Map the tariff label Synergy returns in getLinkedServices ("Tarrif"), or a
+# plan name from plans.PLANS (upper-cased), to the slug of its public plan page.
+# This is the single source of truth for plan-page slugs.
 _TARIFF_SLUGS = {
     "EV2 TARIFF": "Electric-Vehicle-Add-On",
     "ELECTRIC VEHICLE ADD ON": "Electric-Vehicle-Add-On",
@@ -101,7 +102,7 @@ async def fetch_plan_rates(tariff_label: str | None) -> dict | None:
         return None
     try:
         async with httpx.AsyncClient(
-            timeout=30.0, follow_redirects=True,
+            timeout=15.0, follow_redirects=True,
             headers={"User-Agent": "Mozilla/5.0"},
         ) as client:
             resp = await client.get(PLANS_BASE + slug)
