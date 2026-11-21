@@ -37,12 +37,18 @@ Analyse your [Synergy](https://www.synergy.net.au/) (Western Australia) electric
 
 ## Charts
 
-- **Daily Usage** — Stacked area chart of daily consumption broken down by tariff period (peak, off-peak, super off-peak, overnight) with solar export overlay. Includes a zoom slider for navigating the full date range.
-- **Cost Breakdown** — Daily cost in dollars split by tariff period, showing the financial impact of each rate tier over time.
-- **Import vs Export** — Grid import and grid export as overlaid line charts across the full analysis period, useful for spotting seasonal generation and consumption patterns.
-- **Battery Simulation** — Per-day view with a date picker to jump to any day. Shows battery state of charge (left axis) alongside half-hourly consumption, solar export, and battery discharge bars (right axis).
-- **ROI** — Cumulative savings curve over the analysis period. If a battery cost is provided, shows the breakeven point and estimated payback period.
-- **Heatmap** — Hour-of-day vs date grid showing consumption intensity. Highlights usage patterns across time of day and season.
+- **Daily Usage** — Stacked bars per day, split by tariff period (peak, off-peak, super off-peak, overnight), with a solar-export line overlaid. Includes a zoom slider for navigating the full date range.
+- **Cost Breakdown** — Monthly stacked bars of cost by tariff period plus the supply charge (and feed-in credits as a negative bar), with a dashed net-total line, showing the financial impact of each rate tier over time.
+- **Import vs Export** — Daily grid import and grid export as line charts across the full analysis period, useful for spotting seasonal generation and consumption patterns.
+- **Battery Simulation** — Per-day view with a date picker to jump to any day. Shows the battery level line (left axis) alongside half-hourly consumption, solar export, battery discharge and grid top-up bars (right axis).
+- **ROI** — Cumulative projected savings (years out) against the battery cost line, based on annual savings. If a battery cost is provided, shows where the lines cross, i.e. the estimated payback period.
+- **Heatmap** — Calendar heatmap of daily consumption totals, highlighting usage patterns across days, weeks and seasons.
+
+## Date range, payback and projections
+
+- **Default range** — The date range defaults to the last 12 months (ending yesterday). A full year is the most reliable basis for a payback estimate because it covers every season.
+- **Annual savings and payback** — Savings are annualised to a 12-month figure (`net savings / days analysed x 365`), and payback is the battery cost divided by that annual figure.
+- **Projections for short ranges** — If the selected range is under 12 months, annual savings and payback are linear extrapolations and are labelled "projected" in the summary and ROI chart. When the range is under about 11 months (330 days), a warning is also shown: solar generation and household usage vary a lot by season, so a projection from a short window (for example, only winter) can be well off. Treat it as an estimate, not a measured result, and analyse a full 12 months for a reliable figure.
 
 ## Development
 
