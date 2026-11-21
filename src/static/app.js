@@ -1354,7 +1354,15 @@ function renderBatterySize() {
         tooltip: {
             ...baseOption().tooltip,
             trigger: 'item',
-            formatter: p => `${p.data.name ? p.data.name + ' · ' : ''}${fmtKwh(p.value[0])}<br/>${fmtDollars(p.value[1])} / year${proj ? ' (projected)' : ''}`,
+            formatter: p => {
+                const per = `${proj ? ' (projected)' : ''}`;
+                // The dashed recommendation line has no [x, y] value of its own.
+                if (p.componentType === 'markLine') {
+                    return `Recommended ≈ ${fmtKwh(rec.capacity_kwh)}<br/>${fmtDollars(rec.annual_savings_dollars)} / year${per}`;
+                }
+                if (!Array.isArray(p.value)) return '';
+                return `${p.data && p.data.name ? p.data.name + ' · ' : ''}${fmtKwh(p.value[0])}<br/>${fmtDollars(p.value[1])} / year${per}`;
+            },
         },
         series,
     });
