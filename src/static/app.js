@@ -92,11 +92,15 @@ function escapeHtml(s) {
 // === Init ===
 
 document.addEventListener('DOMContentLoaded', async () => {
-    // Default date range: last 3 months (longer ranges take longer to fetch).
+    // Default date range: the last 12 months (end = yesterday, the last full
+    // day; start = end − 364 days). A full year captures seasonal variation,
+    // so payback isn't a projection from a short window.
     const today = new Date();
-    const start = new Date(today);
-    start.setMonth(start.getMonth() - 3);
-    document.getElementById('endDate').value = fmt(today);
+    const end = new Date(today);
+    end.setDate(end.getDate() - 1);
+    const start = new Date(end);
+    start.setDate(start.getDate() - 364);
+    document.getElementById('endDate').value = fmt(end);
     document.getElementById('startDate').value = fmt(start);
     setDateBounds(null, fmt(today));
     ['startDate', 'endDate'].forEach(id =>
@@ -223,7 +227,10 @@ function renderRateFields({ planId, tariffLabel, explicit, fetched }) {
 
     const rateField = (label, unit, inputAttrs) => el('div', { class: 'tariff-field' },
         el('label', {}, label),
-        el('input', { type: 'number', class: 'input', step: '0.0001', placeholder: '—', ...inputAttrs }),
+        el('input', {
+            type: 'number', class: 'input', step: '0.0001', min: '0', placeholder: '—',
+            'data-label': `${label} rate`, ...inputAttrs,
+        }),
         el('span', { class: 'tariff-unit' }, unit),
     );
 
@@ -395,30 +402,55 @@ function stopStatusPolling() {
     statusPoll = null;
 }
 
+const MAX_STATUS_FAILURES = 5;    // consecutive failed status polls before giving up
+let statusFailures = 0;
+
 function startStatusPolling() {
     stopStatusPolling();
+    statusFailures = 0;
     statusPoll = setInterval(pollStatus, 2000);
     pollStatus();
 }
 
+// The server reports an unexpected login/service-discovery failure as
+// {logged_in: false, error}. Show it once and return to the login button.
+function onStatusError(data) {
+    stopStatusPolling();
+    resetLoginUI();
+    toast('Synergy login failed: ' + String(data.error), 'error');
+}
+
 async function pollStatus() {
+    let data;
     try {
         const res = await fetch('/api/auth/status');
-        const data = await res.json();
-        if (!statusPoll) return;  // polling was stopped while this was in flight
-        if (data.logged_in) {
-            stopStatusPolling();
-            loggedIn = true;
-            services = data.services || [];
-            onLoggedIn();
-        } else if (data.browser_open === false) {
-            // The user closed the login window before finishing.
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        data = await res.json();
+    } catch (e) {
+        if (!statusPoll) return;
+        statusFailures += 1;
+        if (statusFailures >= MAX_STATUS_FAILURES) {
             stopStatusPolling();
             resetLoginUI();
-            toast('Login window was closed — click "Open Synergy login" to try again.', 'error');
+            toast('Lost contact with the app server while waiting for login ('
+                + e.message + ') — is it still running? Try "Open Synergy login" again.', 'error');
         }
-    } catch (e) {
-        // transient — keep polling
+        return;
+    }
+    if (!statusPoll) return;  // polling was stopped while this was in flight
+    statusFailures = 0;
+    if (data.error) {
+        onStatusError(data);
+    } else if (data.logged_in) {
+        stopStatusPolling();
+        loggedIn = true;
+        services = data.services || [];
+        onLoggedIn();
+    } else if (data.browser_open === false) {
+        // The user closed the login window before finishing.
+        stopStatusPolling();
+        resetLoginUI();
+        toast('Login window was closed — click "Open Synergy login" to try again.', 'error');
     }
 }
 
@@ -426,8 +458,11 @@ async function pollStatus() {
 async function checkInitialStatus() {
     try {
         const res = await fetch('/api/auth/status');
+        if (!res.ok) return;
         const data = await res.json();
-        if (data.logged_in) {
+        if (data.error) {
+            onStatusError(data);
+        } else if (data.logged_in) {
             loggedIn = true;
             services = data.services || [];
             onLoggedIn({ quiet: true });
@@ -505,6 +540,9 @@ function populateServices() {
     if (services.length) {
         sel.value = services[0].service_id;
         onServiceChange();
+    } else {
+        toast('Logged in, but no electricity services were found on this Synergy account — '
+            + 'you can still analyse a saved dataset.', 'error');
     }
 }
 
@@ -547,9 +585,10 @@ async function onServiceChange() {
 
 async function onPlanChange() {
     await refreshRates({ force: true });
-    // If we've already analysed, re-run to project the newly selected plan.
-    // This reads from cache (set after the first fetch), so it's instant.
-    if (analysisResult) runAnalysis();
+    // If we've already analysed, re-run to project the newly selected plan —
+    // but only from a saved dataset (which a live fetch switches to once its
+    // data is cached), so it's instant. Never auto-start a live Synergy fetch.
+    if (analysisResult && document.getElementById('dataSource').value) runAnalysis();
 }
 
 function canAnalyse() {
@@ -564,6 +603,58 @@ function numOrNull(input) {
     if (!input || input.value.trim() === '') return null;
     const v = parseFloat(input.value);
     return Number.isFinite(v) ? v : null;
+}
+
+// Read one numeric field with the same bounds the backend enforces.
+// Returns {value} (blank -> `blank`) or {error, input}.
+function readField(input, { label, blank = null, min = null, gt = null, max = null }) {
+    if (!input) return { value: blank };
+    if (input.validity && input.validity.badInput) {
+        return { error: `${label} must be a number.`, input };
+    }
+    const value = numOrNull(input);
+    if (value === null) return { value: blank };
+    if (min !== null && value < min) {
+        return { error: min === 0 ? `${label} can't be negative.` : `${label} can't be less than ${min}.`, input };
+    }
+    if (gt !== null && value <= gt) return { error: `${label} must be greater than ${gt}.`, input };
+    if (max !== null && value > max) return { error: `${label} can't be more than ${max}.`, input };
+    return { value };
+}
+
+// Validate the analysis parameters before submitting. Mirrors the backend's
+// AnalyseRequest bounds, so a negative value is rejected here rather than
+// silently replaced by a default. -> {values} or {error, input}.
+function readAnalysisInputs() {
+    const $ = id => document.getElementById(id);
+    const fields = {
+        battery_capacity_kwh: readField($('batteryCapacity'), { label: 'Battery capacity', blank: 15, min: 0 }),
+        inverter_capacity_kw: readField($('inverterCapacity'), { label: 'Inverter capacity', blank: 5, gt: 0 }),
+        round_trip_efficiency: readField($('roundTripEfficiency'), { label: 'Round-trip efficiency', blank: 90, gt: 0, max: 100 }),
+        battery_cost_dollars: readField($('batteryCost'), { label: 'Battery cost', min: 0 }),
+        feed_in_peak_cents: readField($('feedInPeak'), { label: 'Feed-in peak', blank: 0, min: 0 }),
+        feed_in_off_peak_cents: readField($('feedInOffPeak'), { label: 'Feed-in off-peak', blank: 0, min: 0 }),
+        supply_charge_cents: readField($('tariffSupplyCharge'), { label: 'Supply charge', min: 0 }),
+    };
+    const values = {};
+    for (const [key, r] of Object.entries(fields)) {
+        if (r.error) return r;
+        values[key] = r.value;
+    }
+    values.round_trip_efficiency /= 100;
+    // A zero cost means "no cost entered" (no payback figure).
+    if (!values.battery_cost_dollars) values.battery_cost_dollars = null;
+
+    // Editable per-period rates. A blank field is "not overridden" — the
+    // backend falls back to scraped/default rates (and warns if none exist).
+    const rateOverrides = {};
+    for (const input of document.querySelectorAll('#tariffFields input[data-period]')) {
+        const r = readField(input, { label: input.dataset.label || input.dataset.period, min: 0 });
+        if (r.error) return r;
+        if (r.value !== null) rateOverrides[input.dataset.period] = r.value;
+    }
+    values.rate_overrides = Object.keys(rateOverrides).length ? rateOverrides : null;
+    return { values };
 }
 
 async function runAnalysis() {
@@ -592,17 +683,12 @@ async function runAnalysis() {
         if (fullRange || !startDate || !endDate) startDate = endDate = null;
     }
 
-    // Editable per-period rates. A blank field is "not overridden" — the
-    // backend falls back to scraped/default rates (and warns if none exist).
-    const rateOverrides = {};
-    document.querySelectorAll('#tariffFields input[data-period]').forEach(input => {
-        const v = numOrNull(input);
-        if (v !== null) rateOverrides[input.dataset.period] = v;
-    });
-
-    const effPct = numOrNull(document.getElementById('roundTripEfficiency'));
-    const efficiency = effPct === null ? 0.9 : Math.min(Math.max(effPct, 1), 100) / 100;
-
+    const form = readAnalysisInputs();
+    if (form.error) {
+        toast(form.error, 'error');
+        if (form.input) form.input.focus();
+        return;
+    }
     const payload = {
         service_id: cachedFile ? null : selectedServiceId,
         // For a saved dataset the backend uses the label stored with the data.
@@ -610,15 +696,8 @@ async function runAnalysis() {
         plan_id: document.getElementById('planSelector').value || null,
         start_date: startDate,
         end_date: endDate,
-        battery_capacity_kwh: numOrNull(document.getElementById('batteryCapacity')) ?? 15,
-        inverter_capacity_kw: numOrNull(document.getElementById('inverterCapacity')) || 5,
-        round_trip_efficiency: efficiency,
-        battery_cost_dollars: numOrNull(document.getElementById('batteryCost')) || null,
+        ...form.values,
         grid_topup: document.getElementById('gridTopup').checked,
-        feed_in_peak_cents: numOrNull(document.getElementById('feedInPeak')) ?? 0,
-        feed_in_off_peak_cents: numOrNull(document.getElementById('feedInOffPeak')) ?? 0,
-        supply_charge_cents: numOrNull(document.getElementById('tariffSupplyCharge')),
-        rate_overrides: Object.keys(rateOverrides).length ? rateOverrides : null,
         cached_file: cachedFile,
     };
 
@@ -682,20 +761,43 @@ async function runAnalysis() {
 
 // === Progress modal ===
 
+const MAX_PROGRESS_FAILURES = 10;  // consecutive failed progress polls before giving up
+
+// Poll the background job until it finishes. Rejects (so the caller toasts
+// and hides the modal) if the job vanished — status "idle" means the server
+// restarted and lost it — or the server stops answering.
 function pollAnalysis() {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
+        let failures = 0;
+        let settled = false;
+        const finish = (fn, value) => {
+            if (settled) return;
+            settled = true;
+            clearInterval(iv);
+            fn(value);
+        };
         const iv = setInterval(async () => {
+            let job;
             try {
                 const res = await fetch('/api/analyse/progress');
-                const job = await res.json();
-                updateProgressModal(job);
-                if (job.status === 'done' || job.status === 'error') {
-                    clearInterval(iv);
-                    resolve(job);
-                }
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                job = await res.json();
             } catch (e) {
-                // transient — keep polling
+                failures += 1;
+                if (failures >= MAX_PROGRESS_FAILURES) {
+                    finish(reject, new Error('lost contact with the app server ('
+                        + e.message + ') — is it still running?'));
+                }
+                return;
             }
+            failures = 0;
+            if (settled) return;
+            if (job.status === 'idle') {
+                finish(reject, new Error('the analysis job was lost (the app server may have restarted) — please run it again.'));
+                return;
+            }
+            updateProgressModal(job);
+            if (job.status === 'done' || job.status === 'error') finish(resolve, job);
         }, 700);
     });
 }
@@ -785,14 +887,61 @@ function renderWarnings() {
 
 // === Summary Cards ===
 
+// "$1,234" / "−$56" (whole dollars unless `cents`).
+function fmtDollars(v, { cents = false } = {}) {
+    const abs = Math.abs(v).toLocaleString(undefined, cents
+        ? { minimumFractionDigits: 2, maximumFractionDigits: 2 }
+        : { maximumFractionDigits: 0 });
+    return `${v < 0 ? '−' : ''}$${abs}`;
+}
+
+// "1 day" / "30 days".
+function plural(n, word) {
+    return `${n} ${word}${n === 1 ? '' : 's'}`;
+}
+
+// Savings/payback figures scaled to 12 months, with fallbacks for an older
+// backend that doesn't send them yet.
+function projection() {
+    const s = analysisResult.summary;
+    const inputs = analysisResult.inputs || {};
+    let annual = s.annualised_savings_dollars;
+    if (annual === undefined) {
+        annual = s.num_days ? s.period_savings_dollars / s.num_days * 365 : null;
+    }
+    const isProjection = typeof s.is_projection === 'boolean' ? s.is_projection : s.num_days < 365;
+    let cost = inputs.battery_cost_dollars;
+    if (cost === undefined) cost = parseFloat(document.getElementById('batteryCost').value) || null;
+    return { annual, isProjection, cost: cost > 0 ? cost : null, days: s.num_days };
+}
+
 function renderSummary() {
     const s = analysisResult.summary;
+    const p = projection();
+
+    let annualValue = '—';
+    let annualSub = 'no data';
+    if (typeof p.annual === 'number') {
+        annualValue = p.isProjection ? `~${fmtDollars(p.annual)}/yr` : `${fmtDollars(p.annual)}/yr`;
+        annualSub = p.isProjection ? `projected from ${plural(p.days, 'day')}` : `from ${plural(p.days, 'day')} of data`;
+    }
+
+    let paybackValue = '—';
+    let paybackSub = 'enter battery cost';
+    if (s.payback_years) {
+        paybackValue = p.isProjection ? `≈ ${s.payback_years} yrs` : `${s.payback_years} yrs`;
+        paybackSub = p.isProjection ? `projected from ${plural(p.days, 'day')}` : 'estimated';
+    } else if (p.cost) {
+        paybackSub = 'No saving at these settings';
+    }
+
     const cards = [
         { label: 'Grid Import', value: `${s.total_consumption_kwh.toLocaleString()} kWh`, sub: `${s.num_days} days`, cls: 'neutral' },
-        { label: 'Grid Export', value: `${s.total_export_kwh.toLocaleString()} kWh`, sub: `earned $${s.export_credits_dollars} feed-in`, cls: 'positive' },
-        { label: 'Net Cost (no battery)', value: `$${s.total_cost_without_battery_dollars.toLocaleString()}`, sub: `after feed-in credits`, cls: 'negative' },
-        { label: 'Net Cost (with battery)', value: `$${s.total_cost_with_battery_dollars.toLocaleString()}`, sub: `save $${s.period_savings_dollars}/period`, cls: 'positive' },
-        { label: 'Payback', value: s.payback_years ? `${s.payback_years} yrs` : '—', sub: s.payback_years ? 'estimated' : 'enter battery cost', cls: s.payback_years ? 'positive' : 'neutral' },
+        { label: 'Grid Export', value: `${s.total_export_kwh.toLocaleString()} kWh`, sub: `earned ${fmtDollars(s.export_credits_dollars, { cents: true })} feed-in`, cls: 'positive' },
+        { label: 'Net Cost (no battery)', value: fmtDollars(s.total_cost_without_battery_dollars, { cents: true }), sub: `after feed-in credits`, cls: 'negative' },
+        { label: 'Net Cost (with battery)', value: fmtDollars(s.total_cost_with_battery_dollars, { cents: true }), sub: `save ${fmtDollars(s.period_savings_dollars, { cents: true })} over ${s.num_days} days`, cls: 'positive' },
+        { label: p.isProjection ? 'Annual Savings (projected)' : 'Annual Savings', value: annualValue, sub: annualSub, cls: p.annual > 0 ? 'positive' : 'neutral' },
+        { label: p.isProjection ? 'Payback (projected)' : 'Payback', value: paybackValue, sub: paybackSub, cls: s.payback_years ? 'positive' : 'neutral' },
     ];
 
     document.getElementById('summaryGrid').replaceChildren(...cards.map(c =>
@@ -1062,14 +1211,24 @@ function renderBatterySimulation() {
     ));
 
     const times = dayData.map(iv => iv.timestamp.split('T')[1].slice(0, 5));
-    const capacity = parseFloat(document.getElementById('batteryCapacity').value) || 15;
+    // Scale to the capacity that was actually analysed (the form may have
+    // been edited since); fall back to the form for an older backend.
+    const inputs = analysisResult.inputs || {};
+    let capacity = inputs.battery_capacity_kwh;
+    if (typeof capacity !== 'number') capacity = parseFloat(document.getElementById('batteryCapacity').value) || 15;
+    const showTopup = typeof inputs.grid_topup === 'boolean'
+        ? inputs.grid_topup
+        : intervals.some(iv => iv.grid_topup_kwh > 0);
+
+    const legend = ['Battery Level', 'Consumption', 'Solar Export', 'Discharge'];
+    if (showTopup) legend.push('Grid Top-up');
 
     const opt = baseOption();
     opt.grid.right = 80;
     currentChart.clear();
     currentChart.setOption({
         ...opt,
-        legend: { data: ['Battery Level', 'Consumption', 'Solar Export', 'Discharge'], textStyle: { color: cssVar('--text-secondary'), fontSize: 11 }, top: 4 },
+        legend: { data: legend, textStyle: { color: cssVar('--text-secondary'), fontSize: 11 }, top: 4 },
         xAxis: { type: 'category', data: times, axisLabel: { fontSize: 10 } },
         yAxis: [
             { type: 'value', name: 'kWh', nameTextStyle: { fontSize: 11 }, max: Math.max(capacity, 5) },
@@ -1110,6 +1269,14 @@ function renderBatterySimulation() {
                 itemStyle: { color: 'rgba(139,92,246,0.6)' },
                 barMaxWidth: 12,
             },
+            ...(showTopup ? [{
+                name: 'Grid Top-up',
+                type: 'bar',
+                yAxisIndex: 1,
+                data: dayData.map(d => +(d.grid_topup_kwh || 0).toFixed(3)),
+                itemStyle: { color: 'rgba(59,130,246,0.6)' },
+                barMaxWidth: 12,
+            }] : []),
         ],
         tooltip: { ...baseOption().tooltip, trigger: 'axis' },
     });
@@ -1135,15 +1302,17 @@ function jumpToBatteryDay(dateStr) {
 // --- Chart 5: ROI ---
 
 function renderROI() {
-    const s = analysisResult.summary;
-    const batteryCost = parseFloat(document.getElementById('batteryCost').value) || 0;
-    const annualSavings = s.period_savings_dollars;
+    // Annual savings come from the analysis result (already scaled to 12
+    // months server-side), not recomputed from the form.
+    const p = projection();
+    const batteryCost = p.cost;
+    const yearlySavings = p.annual;
 
-    if (!batteryCost || annualSavings <= 0) {
+    if (!batteryCost || !(yearlySavings > 0)) {
         currentChart.setOption({
             ...baseOption(),
             title: {
-                text: batteryCost ? 'No positive savings to project' : 'Enter battery cost to see ROI',
+                text: batteryCost ? 'No saving at these settings' : 'Enter battery cost to see ROI',
                 left: 'center', top: 'center',
                 textStyle: { color: cssVar('--text-muted'), fontSize: 14, fontWeight: 400 },
             },
@@ -1151,10 +1320,11 @@ function renderROI() {
         return;
     }
 
-    // Scale savings to annual rate
-    const daysInPeriod = s.num_days;
-    const dailySavings = annualSavings / daysInPeriod;
-    const yearlySavings = dailySavings * 365;
+    if (p.isProjection) {
+        document.getElementById('chartControls').replaceChildren(el('div', { class: 'chart-note' },
+            `Projected: ${plural(p.days, 'day')} of data scaled to ${fmtDollars(yearlySavings)}/yr. `
+            + 'Seasonal changes in solar and usage are not captured — analyse a full 12 months for a reliable payback.'));
+    }
 
     const years = [];
     const savings = [];

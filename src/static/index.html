@@ -112,7 +112,7 @@
                                 <span class="date-sep">&rarr;</span>
                                 <input type="date" id="endDate" class="input">
                             </div>
-                            <div class="field-hint">For a saved dataset this defaults to the whole dataset — narrow it to analyse part.</div>
+                            <div class="field-hint">Defaults to the last 12 months (for a saved dataset, the whole dataset). Shorter ranges are projected to a year, so their savings and payback are less reliable — solar and usage vary by season.</div>
                         </div>
 
                         <div class="field-row">
@@ -126,7 +126,7 @@
                             <div class="field-group">
                                 <label class="field-label">Inverter capacity</label>
                                 <div class="input-with-unit">
-                                    <input type="number" id="inverterCapacity" value="5" min="0.5" step="0.5" class="input">
+                                    <input type="number" id="inverterCapacity" value="5" min="0.1" step="0.1" class="input">
                                     <span class="unit">kW</span>
                                 </div>
                             </div>
