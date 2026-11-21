@@ -785,11 +785,13 @@ def test_result_echoes_inputs(client, data_dir):
     assert data["inputs"] == {
         "battery_capacity_kwh": 12.5, "inverter_capacity_kw": 3.0,
         "battery_cost_dollars": 9000.0, "round_trip_efficiency": 0.85, "grid_topup": True,
+        "batteries": [{"capacity_kwh": 12.5, "cost_dollars": 9000.0}], "primary_battery": 0,
     }
     defaults = _analyse(client, cached_file=name)["inputs"]
     assert defaults == {
         "battery_capacity_kwh": 15.0, "inverter_capacity_kw": 5.0,
         "battery_cost_dollars": None, "round_trip_efficiency": 0.9, "grid_topup": False,
+        "batteries": [{"capacity_kwh": 15.0, "cost_dollars": None}], "primary_battery": 0,
     }
 
 
@@ -958,3 +960,85 @@ def test_savings_and_feed_in_figures_are_consistent(client, data_dir, grid_topup
     assert s["is_projection"] is False
     assert s["annualised_savings_dollars"] == pytest.approx(s["period_savings_dollars"], abs=cents)
     assert s["payback_years"] == pytest.approx(9000.0 / s["annualised_savings_dollars"], abs=0.05)
+
+
+# --- comparing battery sizes ---
+
+THREE = [{"capacity_kwh": 10.0, "cost_dollars": 7000.0},
+         {"capacity_kwh": 15.0, "cost_dollars": 9000.0},
+         {"capacity_kwh": 20.0, "cost_dollars": 13000.0}]
+
+
+def test_compares_up_to_three_batteries(client, data_dir):
+    name = _write_cache(data_dir, "year.json", _days(date(2025, 7, 1), 365))
+    data = _analyse(client, cached_file=name, batteries=THREE, primary_battery=1)
+    opts, s = data["options"], data["summary"]
+    assert [o["capacity_kwh"] for o in opts] == [10.0, 15.0, 20.0]
+    cents = 0.011
+    for o in opts:
+        # Each option's figures add up the same way the cards do.
+        assert o["period_savings_dollars"] == pytest.approx(
+            o["import_avoided_dollars"] - o["feed_in_lost_dollars"] - o["grid_topup_cost_dollars"],
+            abs=cents * 3)
+        assert o["period_savings_dollars"] == pytest.approx(
+            s["total_cost_without_battery_dollars"] - o["total_cost_with_battery_dollars"],
+            abs=cents * 3)
+        # A battery cuts both grid import and export.
+        assert o["import_with_battery_kwh"] < s["total_consumption_kwh"]
+        assert o["export_with_battery_kwh"] < s["total_export_kwh"]
+        assert o["payback_years"] == pytest.approx(
+            o["cost_dollars"] / o["annualised_savings_dollars"], abs=0.05)
+        assert o["ten_year_net_dollars"] == pytest.approx(
+            o["annualised_savings_dollars"] * 10 - o["cost_dollars"], abs=0.15)
+    # A bigger battery never saves less or imports more. (The synthetic year
+    # repeats one day whose needs fit in under 10 kWh, so these sizes plateau;
+    # the recommendation test checks the rising part of the curve.)
+    savings = [o["annualised_savings_dollars"] for o in opts]
+    assert savings[0] <= savings[1] <= savings[2]
+    imports = [o["import_with_battery_kwh"] for o in opts]
+    assert imports[0] >= imports[1] >= imports[2]
+    # The summary cards describe the primary option (15 kWh).
+    assert s["annualised_savings_dollars"] == opts[1]["annualised_savings_dollars"]
+    assert s["payback_years"] == opts[1]["payback_years"]
+    assert s["import_with_battery_kwh"] == opts[1]["import_with_battery_kwh"]
+    assert data["inputs"]["battery_capacity_kwh"] == 15.0
+
+
+def test_recommendation_is_the_knee_of_the_savings_curve(client, data_dir):
+    name = _write_cache(data_dir, "year.json", _days(date(2025, 7, 1), 365))
+    rec = _analyse(client, cached_file=name, batteries=THREE)["recommendation"]
+    curve = rec["curve"]
+    assert curve[0]["capacity_kwh"] == 0 and curve[0]["annual_savings_dollars"] == 0
+    assert curve[-1]["capacity_kwh"] == rec["sweep_max_kwh"] == 30.0
+    savings = [c["annual_savings_dollars"] for c in curve]
+    assert savings == sorted(savings)  # never worse with more capacity
+    top = rec["max_annual_savings_dollars"]
+    assert rec["annual_savings_dollars"] >= 0.9 * top
+    # ...and it is the smallest size that does.
+    smaller = [c for c in curve if c["capacity_kwh"] < rec["capacity_kwh"]]
+    assert all(c["annual_savings_dollars"] < 0.9 * top for c in smaller)
+    assert rec["best_payback_option"] in (0, 1, 2)
+    assert rec["best_value_option"] in (0, 1, 2)
+
+
+def test_sweep_extends_to_the_largest_option(client, data_dir):
+    name = _write_cache(data_dir, "day.json", [FIXTURE_DAY])
+    rec = _analyse(client, cached_file=name,
+                   batteries=[{"capacity_kwh": 42.0}])["recommendation"]
+    assert rec["sweep_max_kwh"] == 42.0
+    assert rec["curve"][-1]["capacity_kwh"] == 42.0
+    # No prices entered -> no best-value pick among options.
+    assert rec["best_payback_option"] is None and rec["best_value_option"] is None
+
+
+@pytest.mark.parametrize("body", [
+    {"batteries": []},
+    {"batteries": THREE + [{"capacity_kwh": 5.0}]},          # more than 3
+    {"batteries": [{"capacity_kwh": -1.0}]},
+    {"batteries": [{"capacity_kwh": 10.0, "cost_dollars": -5}]},
+    {"batteries": THREE, "primary_battery": 3},             # out of range
+    {},                                                     # no battery at all
+])
+def test_battery_options_are_validated(client, body):
+    response = client.post("/api/analyse", json={"cached_file": "x.json", **body})
+    assert response.status_code == 422

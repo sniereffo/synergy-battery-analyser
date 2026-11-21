@@ -38,6 +38,11 @@ let dataFiles = {};      // saved dataset name -> {name, tariff_label, start, en
 let planDetails = {};    // plan name -> {periods: [{name, key}], flat}
 let ratesRenderedFor = null;  // what the rate fields currently show (avoid clobbering edits)
 let ratesSeq = 0;             // guards against out-of-order rate fetches
+// Batteries to compare (form state, kept as typed) and the one the summary
+// cards and charts describe.
+const MAX_BATTERIES = 3;
+let batteryRows = [{ capacity: '15', cost: '' }];
+let primaryBattery = 0;
 
 // Display labels for the API's tariff-period column names.
 const PERIOD_LABELS = {
@@ -93,6 +98,7 @@ function escapeHtml(s) {
 
 document.addEventListener('DOMContentLoaded', async () => {
     hydrateIcons();
+    renderBatteryRows();
     // Default date range: the last 12 months (end = yesterday, the last full
     // day; start = end − 364 days). A full year captures seasonal variation,
     // so payback isn't a projection from a short window.
@@ -581,6 +587,21 @@ async function fetchPlans() {
 }
 
 // Switch the projected plan from the results view and re-run in place.
+function onResultsBatteryChange() {
+    primaryBattery = Number(document.getElementById('resultsBatterySelector').value) || 0;
+    runAnalysis();
+}
+
+function batteryLabel(b, i) {
+    let label = `${String.fromCharCode(65 + i)} · ${fmtKwh(b.capacity_kwh)}`;
+    if (b.cost_dollars) label += ` · ${fmtDollars(b.cost_dollars)}`;
+    return label;
+}
+
+function fmtKwh(v) {
+    return `${Number(v).toLocaleString(undefined, { maximumFractionDigits: 1 })} kWh`;
+}
+
 async function onResultsPlanChange() {
     const plan = document.getElementById('resultsPlanSelector').value;
     document.getElementById('planSelector').value = plan;
@@ -636,16 +657,80 @@ function readField(input, { label, blank = null, min = null, gt = null, max = nu
     return { value };
 }
 
+// === Battery options (setup form) ===
+
+function renderBatteryRows() {
+    const box = document.getElementById('batteryOptions');
+    if (!box) return;
+    box.replaceChildren(...batteryRows.map((row, i) => {
+        const cap = el('input', { type: 'number', class: 'input', min: '0', max: '200', step: '0.5',
+            placeholder: 'e.g. 13.5', 'aria-label': `Battery ${i + 1} capacity (kWh)` });
+        cap.value = row.capacity;
+        cap.addEventListener('input', () => { batteryRows[i].capacity = cap.value; });
+        const cost = el('input', { type: 'number', class: 'input', min: '0', step: '100',
+            placeholder: 'price (optional)', 'aria-label': `Battery ${i + 1} installed price (AUD)` });
+        cost.value = row.cost;
+        cost.addEventListener('input', () => { batteryRows[i].cost = cost.value; });
+        const remove = batteryRows.length > 1
+            ? el('button', { type: 'button', class: 'btn btn-outline btn-icon', title: 'Remove this battery',
+                  'aria-label': `Remove battery ${i + 1}`, onclick: () => removeBatteryRow(i) }, icon('x', { size: 14 }))
+            : null;
+        return el('div', { class: 'battery-row' },
+            el('span', { class: 'battery-row-label' }, String.fromCharCode(65 + i)),
+            el('div', { class: 'input-with-unit' }, cap, el('span', { class: 'unit' }, 'kWh')),
+            el('div', { class: 'input-with-unit' }, cost, el('span', { class: 'unit' }, 'AUD')),
+            remove);
+    }));
+    const add = document.getElementById('addBatteryBtn');
+    if (add) add.classList.toggle('hidden', batteryRows.length >= MAX_BATTERIES);
+}
+
+function addBatteryRow() {
+    if (batteryRows.length >= MAX_BATTERIES) return;
+    batteryRows.push({ capacity: '', cost: '' });
+    renderBatteryRows();
+    const inputs = document.querySelectorAll('#batteryOptions .battery-row input');
+    inputs[inputs.length - 2]?.focus();
+}
+
+function removeBatteryRow(i) {
+    batteryRows.splice(i, 1);
+    if (primaryBattery >= batteryRows.length) primaryBattery = 0;
+    renderBatteryRows();
+}
+
+// Read the battery rows -> {batteries} or {error, input}. Rows left entirely
+// blank are ignored; a price without a capacity is an error.
+function readBatteries() {
+    const rowEls = document.querySelectorAll('#batteryOptions .battery-row');
+    const batteries = [];
+    for (let i = 0; i < rowEls.length; i++) {
+        const [capInput, costInput] = rowEls[i].querySelectorAll('input');
+        const name = `Battery ${String.fromCharCode(65 + i)}`;
+        const cap = readField(capInput, { label: `${name} capacity`, min: 0, max: 200 });
+        if (cap.error) return cap;
+        const cost = readField(costInput, { label: `${name} price`, min: 0 });
+        if (cost.error) return cost;
+        if (cap.value === null) {
+            if (cost.value !== null) return { error: `${name} needs a capacity (kWh).`, input: capInput };
+            continue;
+        }
+        batteries.push({ capacity_kwh: cap.value, cost_dollars: cost.value ? cost.value : null });
+    }
+    if (!batteries.length) {
+        return { error: 'Enter at least one battery capacity (kWh).', input: rowEls[0]?.querySelector('input') };
+    }
+    return { batteries };
+}
+
 // Validate the analysis parameters before submitting. Mirrors the backend's
 // AnalyseRequest bounds, so a negative value is rejected here rather than
 // silently replaced by a default. -> {values} or {error, input}.
 function readAnalysisInputs() {
     const $ = id => document.getElementById(id);
     const fields = {
-        battery_capacity_kwh: readField($('batteryCapacity'), { label: 'Battery capacity', blank: 15, min: 0 }),
         inverter_capacity_kw: readField($('inverterCapacity'), { label: 'Inverter capacity', blank: 5, gt: 0 }),
         round_trip_efficiency: readField($('roundTripEfficiency'), { label: 'Round-trip efficiency', blank: 90, gt: 0, max: 100 }),
-        battery_cost_dollars: readField($('batteryCost'), { label: 'Battery cost', min: 0 }),
         feed_in_peak_cents: readField($('feedInPeak'), { label: 'Feed-in peak', blank: 0, min: 0 }),
         feed_in_off_peak_cents: readField($('feedInOffPeak'), { label: 'Feed-in off-peak', blank: 0, min: 0 }),
         supply_charge_cents: readField($('tariffSupplyCharge'), { label: 'Supply charge', min: 0 }),
@@ -656,8 +741,11 @@ function readAnalysisInputs() {
         values[key] = r.value;
     }
     values.round_trip_efficiency /= 100;
-    // A zero cost means "no cost entered" (no payback figure).
-    if (!values.battery_cost_dollars) values.battery_cost_dollars = null;
+    const b = readBatteries();
+    if (b.error) return b;
+    values.batteries = b.batteries;
+    if (primaryBattery >= b.batteries.length) primaryBattery = 0;
+    values.primary_battery = primaryBattery;
 
     // Editable per-period rates. A blank field is "not overridden" — the
     // backend falls back to scraped/default rates (and warns if none exist).
@@ -841,9 +929,15 @@ function showResults() {
     // Keep the results plan switcher in sync with the analysed plan
     // ("" = "My current plan (from data)").
     document.getElementById('resultsPlanSelector').value = document.getElementById('planSelector').value;
+    const batteries = (analysisResult.inputs && analysisResult.inputs.batteries) || [];
+    const bsel = document.getElementById('resultsBatterySelector');
+    bsel.replaceChildren(...batteries.map((b, i) => el('option', { value: String(i) }, batteryLabel(b, i))));
+    bsel.value = String((analysisResult.inputs && analysisResult.inputs.primary_battery) || 0);
+    document.getElementById('resultsBatterySwitch').classList.toggle('hidden', batteries.length < 2);
     renderPlanBanner();
     renderWarnings();
     renderSummary();
+    renderComparison();
     renderChart();
 }
 
@@ -925,7 +1019,7 @@ function projection() {
     }
     const isProjection = typeof s.is_projection === 'boolean' ? s.is_projection : s.num_days < 360;
     let cost = inputs.battery_cost_dollars;
-    if (cost === undefined) cost = parseFloat(document.getElementById('batteryCost').value) || null;
+    if (cost === undefined) cost = null;
     return { annual, isProjection, cost: cost > 0 ? cost : null, days: s.num_days };
 }
 
@@ -950,7 +1044,11 @@ function renderSummary() {
     }
 
     const cards = [
-        { icon: 'plug-zap', label: 'Grid Import', value: `${s.total_consumption_kwh.toLocaleString()} kWh`, sub: `${s.num_days} days`, cls: 'neutral' },
+        { icon: 'plug-zap', label: 'Grid Import', value: `${s.total_consumption_kwh.toLocaleString()} kWh`,
+          title: 'Energy bought from the grid',
+          sub: typeof s.import_with_battery_kwh === 'number'
+              ? ['without battery', `with battery: ${fmtKwh(Math.round(s.import_with_battery_kwh))}`]
+              : `${s.num_days} days`, cls: 'neutral' },
         { icon: 'sun-medium', label: 'Grid Export', value: `${s.total_export_kwh.toLocaleString()} kWh`,
           title: typeof s.export_with_battery_kwh === 'number'
               ? `Feed-in credits earned on exported solar. With a battery, ${s.export_with_battery_kwh.toLocaleString()} kWh would still be exported; the rest is stored, and its lost feed-in is already deducted from the saving.`
@@ -975,6 +1073,163 @@ function renderSummary() {
         )));
 }
 
+// === Battery comparison + recommendation ===
+
+function signedDollars(v) {
+    return v >= 0 ? `+${fmtDollars(v)}` : fmtDollars(v);
+}
+
+function showBattery(i) {
+    primaryBattery = i;
+    runAnalysis();
+}
+
+function renderComparison() {
+    const card = document.getElementById('comparisonCard');
+    const opts = analysisResult.options || [];
+    const rec = analysisResult.recommendation;
+    const s = analysisResult.summary;
+    if (!opts.length) {
+        card.classList.add('hidden');
+        return;
+    }
+    card.classList.remove('hidden');
+    const proj = !!s.is_projection;
+    const primary = (analysisResult.inputs && analysisResult.inputs.primary_battery) || 0;
+    const name = i => String.fromCharCode(65 + i);
+
+    // Recommendation.
+    const lines = [];
+    if (rec && rec.capacity_kwh !== null && rec.capacity_kwh !== undefined) {
+        const curve = rec.curve || [];
+        const at = curve.findIndex(c => c.capacity_kwh === rec.capacity_kwh);
+        const next = at >= 0 ? curve[at + 1] : null;
+        const marginal = next
+            ? (next.annual_savings_dollars - curve[at].annual_savings_dollars) / (next.capacity_kwh - curve[at].capacity_kwh)
+            : null;
+        lines.push(el('p', {},
+            el('strong', {}, `About ${fmtKwh(rec.capacity_kwh)} suits your usage. `),
+            `It captures ${Math.round(rec.share * 100)}% of the saving a ${fmtKwh(rec.sweep_max_kwh)} battery would give `
+            + `(${fmtDollars(rec.annual_savings_dollars)} of ${fmtDollars(rec.max_annual_savings_dollars)} a year${proj ? ', projected' : ''}).`,
+            marginal !== null ? ` Beyond that, each extra kWh adds only about ${fmtDollars(marginal, { cents: true })} a year.` : ''));
+    } else {
+        lines.push(el('p', {}, el('strong', {}, 'No battery size saves money at these settings.')));
+    }
+    if (rec && rec.best_payback_option !== null && rec.best_payback_option !== undefined) {
+        const bp = opts[rec.best_payback_option];
+        const bv = opts[rec.best_value_option];
+        let text = `Of your options, ${name(rec.best_payback_option)} (${fmtKwh(bp.capacity_kwh)}) pays back fastest, in ${bp.payback_years} years`;
+        if (bv && rec.best_value_option === rec.best_payback_option) {
+            text += `, and gives the best ${rec.life_years}-year return (${signedDollars(bv.ten_year_net_dollars)}).`;
+        } else if (bv) {
+            text += `; ${name(rec.best_value_option)} (${fmtKwh(bv.capacity_kwh)}) gives the best ${rec.life_years}-year return (${signedDollars(bv.ten_year_net_dollars)}).`;
+        } else {
+            text += '.';
+        }
+        lines.push(el('p', {}, text));
+    } else {
+        lines.push(el('p', { class: 'muted' }, 'Add an installed price to each battery to compare payback and long-term return.'));
+    }
+    lines.push(el('p', { class: 'muted small' },
+        `${rec ? rec.life_years : 10}-year return = annual saving × ${rec ? rec.life_years : 10} − price (a typical battery warranty). `
+        + 'All batteries use the same inverter, efficiency and top-up settings.'));
+    document.getElementById('recommendation').replaceChildren(
+        icon('lightbulb', { size: 18, cls: 'rec-icon' }), el('div', {}, lines));
+
+    // Side-by-side table: no battery, then each option.
+    const kwh = v => fmtKwh(Math.round(v));
+    const money = v => fmtDollars(v, { cents: true });
+    const head = el('tr', {}, el('th', {}, ''), el('th', {}, 'No battery'),
+        opts.map((o, i) => {
+            const badges = [];
+            if (i === primary && opts.length > 1) badges.push(el('span', { class: 'badge' }, 'shown above'));
+            if (rec && i === rec.best_payback_option) badges.push(el('span', { class: 'badge good' }, 'fastest payback'));
+            if (rec && i === rec.best_value_option && rec.best_value_option !== rec.best_payback_option) {
+                badges.push(el('span', { class: 'badge good' }, `best ${rec.life_years}-yr return`));
+            }
+            const label = `${name(i)} · ${fmtKwh(o.capacity_kwh)}`;
+            const title = (i !== primary && opts.length > 1)
+                ? el('button', { type: 'button', class: 'link-btn', title: 'Show this battery in the cards and charts',
+                      onclick: () => showBattery(i) }, label)
+                : el('span', {}, label);
+            return el('th', { class: i === primary ? 'is-primary' : '' }, title, badges.length ? el('div', { class: 'badges' }, badges) : null);
+        }));
+    const row = (label, base, per, hint) => el('tr', {},
+        el('th', { scope: 'row', title: hint || null }, label),
+        el('td', {}, base),
+        opts.map((o, i) => el('td', { class: i === primary ? 'is-primary' : '' }, per(o))));
+    const body = [
+        row('Price', '—', o => (o.cost_dollars ? fmtDollars(o.cost_dollars) : 'not entered')),
+        row('Grid import', kwh(s.total_consumption_kwh), o => kwh(o.import_with_battery_kwh), 'Energy bought from the grid'),
+        row('Grid export', kwh(s.total_export_kwh), o => kwh(o.export_with_battery_kwh), 'Solar sent to the grid; a battery stores some of it instead'),
+        row('Feed-in credits', money(s.export_credits_dollars), o => money(o.export_credits_with_battery_dollars)),
+        row(`Net cost (${plural(s.num_days, 'day')})`, money(s.total_cost_without_battery_dollars), o => money(o.total_cost_with_battery_dollars), 'After feed-in credits, including the supply charge'),
+        row(proj ? 'Saving per year (projected)' : 'Saving per year', '—',
+            o => (o.annualised_savings_dollars === null ? '—' : `${proj ? '~' : ''}${fmtDollars(o.annualised_savings_dollars)}`)),
+        row('Payback', '—', o => (o.payback_years ? `${proj ? '≈ ' : ''}${o.payback_years} yrs` : (o.cost_dollars ? 'no saving' : '—'))),
+        row(`${rec ? rec.life_years : 10}-year return`, '—', o => (o.ten_year_net_dollars === null ? '—' : signedDollars(o.ten_year_net_dollars))),
+    ];
+    document.getElementById('comparisonTable').replaceChildren(el('thead', {}, head), el('tbody', {}, body));
+}
+
+// --- Chart: annual saving vs battery size ---
+
+function renderBatterySize() {
+    const rec = analysisResult.recommendation;
+    const opts = analysisResult.options || [];
+    if (!rec || !rec.curve || !rec.curve.length) {
+        currentChart.setOption({
+            ...baseOption(),
+            title: { text: 'No size comparison available', left: 'center', top: 'center',
+                textStyle: { color: cssVar('--text-muted'), fontSize: 14, fontWeight: 400 } },
+        });
+        return;
+    }
+    const proj = !!analysisResult.summary.is_projection;
+    const lineName = proj ? 'Annual saving (projected)' : 'Annual saving';
+    const series = [
+        {
+            name: lineName,
+            type: 'line',
+            data: rec.curve.map(c => [c.capacity_kwh, c.annual_savings_dollars]),
+            smooth: true,
+            symbol: 'circle',
+            symbolSize: 5,
+            lineStyle: { color: '#4ade94', width: 2 },
+            itemStyle: { color: '#4ade94' },
+            areaStyle: { color: 'rgba(74,222,148,0.10)' },
+            markLine: rec.capacity_kwh !== null ? {
+                symbol: 'none',
+                label: { formatter: `Recommended ≈ ${rec.capacity_kwh} kWh`, color: cssVar('--text-secondary') },
+                lineStyle: { color: cssVar('--accent-green'), type: 'dashed' },
+                data: [{ xAxis: rec.capacity_kwh }],
+            } : undefined,
+        },
+        {
+            name: 'Your batteries',
+            type: 'scatter',
+            data: opts.map((o, i) => ({ value: [o.capacity_kwh, o.annualised_savings_dollars], name: String.fromCharCode(65 + i) })),
+            symbolSize: 12,
+            itemStyle: { color: '#3b82f6' },
+            label: { show: true, position: 'top', formatter: p => p.data.name, color: cssVar('--text-primary') },
+            z: 5,
+        },
+    ];
+    currentChart.setOption({
+        ...baseOption(),
+        legend: { data: [lineName, 'Your batteries'], textStyle: { color: cssVar('--text-secondary'), fontSize: 11 }, top: 4 },
+        grid: { ...baseOption().grid, top: 72 },
+        xAxis: { type: 'value', name: 'Battery capacity (kWh)', nameLocation: 'middle', nameGap: 30, min: 0 },
+        yAxis: { type: 'value', name: '$ / year', nameTextStyle: { fontSize: 11 } },
+        tooltip: {
+            ...baseOption().tooltip,
+            trigger: 'item',
+            formatter: p => `${p.data.name ? p.data.name + ' · ' : ''}${fmtKwh(p.value[0])}<br/>${fmtDollars(p.value[1])} / year${proj ? ' (projected)' : ''}`,
+        },
+        series,
+    });
+}
+
 // === Charts ===
 
 function renderChart() {
@@ -996,6 +1251,7 @@ function renderChart() {
         cost: renderCostBreakdown,
         solar: renderSolarVsConsumption,
         battery: renderBatterySimulation,
+        size: renderBatterySize,
         roi: renderROI,
         heatmap: renderHeatmap,
     };
@@ -1238,7 +1494,7 @@ function renderBatterySimulation() {
     // been edited since); fall back to the form for an older backend.
     const inputs = analysisResult.inputs || {};
     let capacity = inputs.battery_capacity_kwh;
-    if (typeof capacity !== 'number') capacity = parseFloat(document.getElementById('batteryCapacity').value) || 15;
+    if (typeof capacity !== 'number') capacity = 15;
     const showTopup = typeof inputs.grid_topup === 'boolean'
         ? inputs.grid_topup
         : intervals.some(iv => iv.grid_topup_kwh > 0);

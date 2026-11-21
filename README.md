@@ -12,7 +12,9 @@ Analyse your [Synergy](https://www.synergy.net.au/) (Western Australia) electric
 
 - **Synergy portal integration** — Logs in to the current My Synergy portal (`my.synergy.net.au`) in a real browser window (you complete the MFA yourself), then reads your half-hourly interval data automatically
 - **Tariff-aware analysis** — Reads the tariff period of each half-hourly slot directly from Synergy's data (peak, off-peak, off-peak AM, overnight, super off-peak), and prefills known plan rates which you can edit to match your bill
-- **Battery simulation** — Models half-hourly charge/discharge cycles, charges from solar export, discharges to offset grid import, with optional grid top-up during the cheapest tariff period
+- **Battery simulation** — Models half-hourly charge/discharge cycles: charges from solar export and discharges to offset grid import, but only when grid power is worth more than the stored energy (it won't spend stored solar on cheap Super Off Peak power). Optional grid top-up during the cheapest tariff period
+- **Compare battery sizes** — Enter up to three batteries (capacity and installed price) to compare side by side: grid import and export, feed-in, net cost, annual saving, payback and 10-year return
+- **Recommended size** — Every analysis also tests sizes up to 30 kWh and recommends the smallest one that captures 90% of the achievable saving, where extra capacity stops paying its way
 - **Feed-in credit accounting** — Calculates DEBS feed-in credits (configurable peak/off-peak rates) and tracks lost credits when the battery captures energy that would otherwise be exported
 - **Offline analysis** — Saves fetched interval data locally so you can re-run analysis with different parameters without logging in again
 - **Light/dark theme** — Toggleable via header button, honours system preference with flash-free page load
@@ -21,7 +23,7 @@ Analyse your [Synergy](https://www.synergy.net.au/) (Western Australia) electric
 ## How it works
 
 1. Click **Open Synergy login** — a browser window opens on the My Synergy portal. Log in as normal, including your one-time MFA code. Your password is entered only on Synergy's own site; this app never sees it.
-2. Pick your service, choose a date range, set battery capacity and feed-in rates, and confirm the (prefilled) tariff rates.
+2. Pick your service, choose a date range, enter up to three batteries to compare (capacity and price), set feed-in rates, and confirm the (prefilled) tariff rates.
 3. The tool fetches your half-hourly consumption and solar-export data from the portal in roughly monthly spans (one request per span), and saves it locally for future use.
 4. Each interval is priced using its Synergy-supplied tariff period (or a plan you choose to project) and a battery charge/discharge simulation is run.
 5. Results are presented as summary cards and six interactive charts.
@@ -40,6 +42,7 @@ Analyse your [Synergy](https://www.synergy.net.au/) (Western Australia) electric
 - **Daily Usage** — Stacked bars per day, split by tariff period (peak, off-peak, super off-peak, overnight), with a solar-export line overlaid. Includes a zoom slider for navigating the full date range.
 - **Cost Breakdown** — Monthly stacked bars of cost by tariff period plus the supply charge (and feed-in credits as a negative bar), with a dashed net-total line, showing the financial impact of each rate tier over time.
 - **Import vs Export** — Daily grid import and grid export as line charts across the full analysis period, useful for spotting seasonal generation and consumption patterns.
+- **Battery Size** — Annual saving against battery capacity from 0 to 30 kWh, with your batteries and the recommended size marked. Shows where extra capacity stops adding much.
 - **Battery Simulation** — Per-day view with a date picker to jump to any day. Shows the battery level line (left axis) alongside half-hourly consumption, solar export, battery discharge and grid top-up bars (right axis).
 - **ROI** — Cumulative projected savings (years out) against the battery cost line, based on annual savings. If a battery cost is provided, shows where the lines cross, i.e. the estimated payback period.
 - **Heatmap** — Calendar heatmap of daily consumption totals, highlighting usage patterns across days, weeks and seasons.

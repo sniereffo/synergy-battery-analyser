@@ -24,7 +24,7 @@ from .plans import (
     PLANS, available_plans, default_plan_for_tariff, assign_periods, rate_map_for_plan,
     plan_periods, plan_details,
 )
-from .battery import simulate_battery
+from .battery import simulate_steady_state
 
 
 MAX_ERROR_CHARS = 300
@@ -121,6 +121,23 @@ DATA_DIR = Path(os.environ.get("SYNERGY_DATA_DIR") or "data")
 NonNegative = Annotated[float, Field(ge=0)]
 
 
+MAX_BATTERY_OPTIONS = 3
+# Battery warranties are typically ~10 years; used for the "10-year net" figure.
+BATTERY_LIFE_YEARS = 10
+# Recommended size = smallest capacity capturing this share of the saving
+# available from the largest size in the sweep (the knee of the curve).
+RECOMMEND_SHARE = 0.9
+SWEEP_STEP_KWH = 2.5
+SWEEP_MIN_MAX_KWH = 30.0
+
+
+class BatteryOption(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False)
+
+    capacity_kwh: float = Field(ge=0, le=200)
+    cost_dollars: float | None = Field(None, ge=0)
+
+
 class AnalyseRequest(BaseModel):
     model_config = ConfigDict(allow_inf_nan=False)
 
@@ -133,7 +150,13 @@ class AnalyseRequest(BaseModel):
     # inclusive filter; omitted = all cached data.
     start_date: date | None = None
     end_date: date | None = None
-    battery_capacity_kwh: float = Field(ge=0)
+    # Up to MAX_BATTERY_OPTIONS batteries to compare; `primary_battery` picks
+    # the one the cards and charts describe. The single-battery fields are the
+    # older form and are used when `batteries` is omitted.
+    batteries: list[BatteryOption] | None = Field(None, min_length=1,
+                                                  max_length=MAX_BATTERY_OPTIONS)
+    primary_battery: int = Field(0, ge=0)
+    battery_capacity_kwh: float | None = Field(None, ge=0)
     battery_cost_dollars: float | None = Field(None, ge=0)
     inverter_capacity_kw: float = Field(5.0, gt=0)
     round_trip_efficiency: float = Field(0.9, gt=0, le=1)
@@ -149,6 +172,125 @@ class AnalyseRequest(BaseModel):
         if self.start_date and self.end_date and self.end_date < self.start_date:
             raise ValueError("end_date must be on or after start_date")
         return self
+
+    @model_validator(mode="after")
+    def validate_batteries(self):
+        if not self.batteries:
+            if self.battery_capacity_kwh is None:
+                raise ValueError("Give at least one battery (batteries or battery_capacity_kwh)")
+            self.batteries = [BatteryOption(capacity_kwh=self.battery_capacity_kwh,
+                                            cost_dollars=self.battery_cost_dollars)]
+        if self.primary_battery >= len(self.batteries):
+            raise ValueError("primary_battery is out of range")
+        primary = self.batteries[self.primary_battery]
+        # Keep the single-battery fields describing the primary option.
+        self.battery_capacity_kwh = primary.capacity_kwh
+        self.battery_cost_dollars = primary.cost_dollars
+        return self
+
+
+def _simulate(priced: list[dict], capacity_kwh: float, req: "AnalyseRequest") -> list[dict]:
+    # Steady state: each size starts at its own end-of-period charge, so sizes
+    # are compared fairly (no leftover-energy penalty for bigger batteries).
+    return simulate_steady_state(
+        priced, capacity_kwh, req.grid_topup, req.inverter_capacity_kw,
+        round_trip_efficiency=req.round_trip_efficiency,
+    )
+
+
+def _battery_outcome(battery_result: list[dict], base: dict, num_days: int,
+                     cost_dollars: float | None) -> dict:
+    """Figures for one battery size, in cents/kWh (rounded by the caller).
+
+    Identities: net_savings = import_avoided - feed_in_lost - topup_cost
+    = cost_without - cost_with; credits_with = credits - feed_in_lost.
+    """
+    import_avoided = sum(e["savings_cents"] for e in battery_result)
+    feed_in_lost = sum(e["lost_feed_in_cents"] for e in battery_result)
+    topup_cost = sum(e["grid_topup_cost_cents"] for e in battery_result)
+    net_savings = import_avoided - feed_in_lost - topup_cost
+    solar_charge = sum(e["charge_kwh"] for e in battery_result)
+    discharge = sum(e["discharge_kwh"] for e in battery_result)
+    topup_kwh = sum(e["grid_topup_kwh"] for e in battery_result)
+    annual = (net_savings / 100) / num_days * 365 if num_days else None
+    payback = None
+    if cost_dollars and annual is not None and annual > 0:
+        payback = cost_dollars / annual
+    ten_year = None
+    if cost_dollars is not None and annual is not None:
+        ten_year = annual * BATTERY_LIFE_YEARS - cost_dollars
+    return {
+        "import_avoided": import_avoided,
+        "feed_in_lost": feed_in_lost,
+        "topup_cost": topup_cost,
+        "net_savings": net_savings,
+        "cost_with": base["cost_without"] - net_savings,
+        "import_with_kwh": base["import_kwh"] - discharge + topup_kwh,
+        "export_with_kwh": base["export_kwh"] - solar_charge,
+        "credits_with": base["credits"] - feed_in_lost,
+        "annual": annual,
+        "payback": payback,
+        "ten_year": ten_year,
+    }
+
+
+def _option_payload(capacity_kwh: float, cost_dollars: float | None, o: dict) -> dict:
+    return {
+        "capacity_kwh": capacity_kwh,
+        "cost_dollars": cost_dollars,
+        "import_with_battery_kwh": round(o["import_with_kwh"], 2),
+        "export_with_battery_kwh": round(o["export_with_kwh"], 2),
+        "export_credits_with_battery_dollars": round(o["credits_with"] / 100, 2),
+        "total_cost_with_battery_dollars": round(o["cost_with"] / 100, 2),
+        "import_avoided_dollars": round(o["import_avoided"] / 100, 2),
+        "feed_in_lost_dollars": round(o["feed_in_lost"] / 100, 2),
+        "grid_topup_cost_dollars": round(o["topup_cost"] / 100, 2),
+        "period_savings_dollars": round(o["net_savings"] / 100, 2),
+        "annualised_savings_dollars": round(o["annual"], 2) if o["annual"] is not None else None,
+        "payback_years": round(o["payback"], 1) if o["payback"] is not None else None,
+        "ten_year_net_dollars": round(o["ten_year"], 2) if o["ten_year"] is not None else None,
+    }
+
+
+def _recommend(priced: list[dict], req: "AnalyseRequest", base: dict, num_days: int,
+               options: list[dict]) -> dict:
+    """Sweep battery sizes to find where extra capacity stops paying its way.
+
+    The recommended size is the smallest capacity that captures
+    RECOMMEND_SHARE of the saving available from the largest size swept
+    (at least SWEEP_MIN_MAX_KWH, or the largest option entered). Among the
+    user's priced options, also report the fastest payback and the best
+    net benefit over BATTERY_LIFE_YEARS.
+    """
+    top = max([SWEEP_MIN_MAX_KWH] + [b.capacity_kwh for b in req.batteries])
+    steps = int(top // SWEEP_STEP_KWH)
+    caps = sorted({round(k * SWEEP_STEP_KWH, 2) for k in range(steps + 1)} | {top})
+    curve = []
+    for cap in caps:
+        o = _battery_outcome(_simulate(priced, cap, req), base, num_days, None)
+        curve.append({"capacity_kwh": cap,
+                      "annual_savings_dollars": round(o["annual"] or 0.0, 2)})
+    best_saving = max((c["annual_savings_dollars"] for c in curve), default=0.0)
+    recommended = None
+    if best_saving > 0:
+        target = RECOMMEND_SHARE * best_saving
+        recommended = next(c for c in curve if c["annual_savings_dollars"] >= target)
+
+    priced_opts = [(i, o) for i, o in enumerate(options)
+                   if o["cost_dollars"] and (o["annualised_savings_dollars"] or 0) > 0]
+    best_payback = min(priced_opts, key=lambda t: t[1]["payback_years"])[0] if priced_opts else None
+    best_value = max(priced_opts, key=lambda t: t[1]["ten_year_net_dollars"])[0] if priced_opts else None
+    return {
+        "capacity_kwh": recommended["capacity_kwh"] if recommended else None,
+        "annual_savings_dollars": recommended["annual_savings_dollars"] if recommended else None,
+        "share": RECOMMEND_SHARE,
+        "sweep_max_kwh": top,
+        "max_annual_savings_dollars": round(best_saving, 2),
+        "curve": curve,
+        "best_payback_option": best_payback,
+        "best_value_option": best_value,
+        "life_years": BATTERY_LIFE_YEARS,
+    }
 
 
 # --- Basic routes ---
@@ -595,29 +737,35 @@ async def _do_analysis(req: AnalyseRequest, job: dict) -> dict:
     for name, kwh in sorted(unpriced_consumption(priced, plan.rates).items()):
         warnings.append(f"No rate for '{display_name(name)}' — {kwh:.1f} kWh priced at 0c")
 
-    battery_result = simulate_battery(
-        priced, req.battery_capacity_kwh, req.grid_topup, req.inverter_capacity_kw,
-        round_trip_efficiency=req.round_trip_efficiency,
-    )
-
-    # 4. Summarise
+    # 4. Baseline (no battery), then each battery option on the same usage.
     total_supply_cost = num_days * plan.supply_charge_cents
-    total_consumption = sum(e["consumption_kwh"] for e in battery_result)
-    total_export = sum(e["export_kwh"] for e in battery_result)
-    total_import_cost = sum(e["cost_cents"] for e in battery_result)
-    total_export_credits = sum(e["export_credit_cents"] for e in battery_result)
+    total_consumption = sum(e["consumption_kwh"] for e in priced)
+    total_export = sum(e["export_kwh"] for e in priced)
+    total_import_cost = sum(e["cost_cents"] for e in priced)
+    total_export_credits = sum(e["export_credit_cents"] for e in priced)
     total_cost_without_battery = total_import_cost + total_supply_cost - total_export_credits
+    base = {"cost_without": total_cost_without_battery, "import_kwh": total_consumption,
+            "export_kwh": total_export, "credits": total_export_credits}
 
-    total_discharge_savings = sum(e["savings_cents"] for e in battery_result)
-    total_lost_feed_in = sum(e["lost_feed_in_cents"] for e in battery_result)
-    total_topup_cost = sum(e["grid_topup_cost_cents"] for e in battery_result)
-    net_savings = total_discharge_savings - total_lost_feed_in - total_topup_cost
-    total_cost_with_battery = total_cost_without_battery - net_savings
-    # With a battery, solar it stores is no longer exported, so its feed-in
-    # credit is lost (already deducted in net_savings above).
-    total_solar_charge = sum(e["charge_kwh"] for e in battery_result)
-    export_with_battery = total_export - total_solar_charge
-    export_credits_with_battery = total_export_credits - total_lost_feed_in
+    job["phase"] = "Comparing battery sizes…"
+    results_by_option = []
+    options = []
+    for b in req.batteries:
+        res = _simulate(priced, b.capacity_kwh, req)
+        o = _battery_outcome(res, base, num_days, b.cost_dollars)
+        results_by_option.append((res, o))
+        options.append(_option_payload(b.capacity_kwh, b.cost_dollars, o))
+    recommendation = _recommend(priced, req, base, num_days, options)
+
+    # The cards and charts describe the primary option.
+    battery_result, primary = results_by_option[req.primary_battery]
+    net_savings = primary["net_savings"]
+    total_cost_with_battery = primary["cost_with"]
+    total_discharge_savings = primary["import_avoided"]
+    total_lost_feed_in = primary["feed_in_lost"]
+    total_topup_cost = primary["topup_cost"]
+    export_with_battery = primary["export_with_kwh"]
+    export_credits_with_battery = primary["credits_with"]
 
     # Savings are projected to 12 months from however many days were analysed.
     # Short ranges are a rough estimate: solar and usage vary by season.
@@ -654,6 +802,7 @@ async def _do_analysis(req: AnalyseRequest, job: dict) -> dict:
             "export_credits_dollars": round(total_export_credits / 100, 2),
             # Feed-in with a battery, and how the saving is made up:
             # period_savings = import_avoided - feed_in_lost - grid_topup_cost
+            "import_with_battery_kwh": round(primary["import_with_kwh"], 2),
             "export_with_battery_kwh": round(export_with_battery, 2),
             "export_credits_with_battery_dollars": round(export_credits_with_battery / 100, 2),
             "import_avoided_dollars": round(total_discharge_savings / 100, 2),
@@ -675,7 +824,11 @@ async def _do_analysis(req: AnalyseRequest, job: dict) -> dict:
             "battery_cost_dollars": req.battery_cost_dollars,
             "round_trip_efficiency": req.round_trip_efficiency,
             "grid_topup": req.grid_topup,
+            "batteries": [b.model_dump() for b in req.batteries],
+            "primary_battery": req.primary_battery,
         },
+        "options": options,
+        "recommendation": recommendation,
         "warnings": warnings,
         "cache_file": cache_name,
         "intervals": [

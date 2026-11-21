@@ -118,14 +118,14 @@
                             <div class="field-hint">Defaults to the last 12 months (for a saved dataset, the whole dataset). Shorter ranges are projected to a year, so their savings and payback are less reliable — solar and usage vary by season.</div>
                         </div>
 
+                        <div class="field-group">
+                            <label class="field-label">Batteries to compare <span class="optional">(up to 3)</span></label>
+                            <div id="batteryOptions" class="battery-options"></div>
+                            <button type="button" id="addBatteryBtn" class="btn btn-outline btn-small" onclick="addBatteryRow()"><i data-icon="plus" data-size="14"></i>Add a battery</button>
+                            <div class="field-hint">Capacity is the energy the battery stores (kWh). The installed price is optional but needed for payback. Every analysis also tests sizes up to 30 kWh to recommend one.</div>
+                        </div>
+
                         <div class="field-row">
-                            <div class="field-group">
-                                <label class="field-label">Battery capacity</label>
-                                <div class="input-with-unit">
-                                    <input type="number" id="batteryCapacity" value="15" min="0" step="0.5" class="input">
-                                    <span class="unit">kWh</span>
-                                </div>
-                            </div>
                             <div class="field-group">
                                 <label class="field-label">Inverter capacity</label>
                                 <div class="input-with-unit">
@@ -143,13 +143,6 @@
                         </div>
 
                         <div class="field-row">
-                            <div class="field-group">
-                                <label class="field-label">Battery cost <span class="optional">(optional)</span></label>
-                                <div class="input-with-unit">
-                                    <input type="number" id="batteryCost" placeholder="—" min="0" step="100" class="input">
-                                    <span class="unit">AUD</span>
-                                </div>
-                            </div>
                             <div class="field-group">
                                 <label class="field-label">Feed-in peak <span class="optional">(3pm–9pm)</span></label>
                                 <div class="input-with-unit">
@@ -187,9 +180,15 @@
         <!-- Results Section -->
         <section class="results-section hidden" id="resultsSection">
             <!-- Plan switcher (project a different plan on the same usage) -->
-            <div class="results-plan-switch">
-                <label for="resultsPlanSelector"><i data-icon="repeat" data-size="14"></i>Project plan</label>
-                <select id="resultsPlanSelector" class="input" onchange="onResultsPlanChange()"></select>
+            <div class="results-switchers">
+                <div class="results-plan-switch">
+                    <label for="resultsPlanSelector"><i data-icon="repeat" data-size="14"></i>Project plan</label>
+                    <select id="resultsPlanSelector" class="input" onchange="onResultsPlanChange()"></select>
+                </div>
+                <div class="results-plan-switch" id="resultsBatterySwitch">
+                    <label for="resultsBatterySelector"><i data-icon="battery-medium" data-size="14"></i>Show battery</label>
+                    <select id="resultsBatterySelector" class="input" onchange="onResultsBatteryChange()"></select>
+                </div>
             </div>
 
             <!-- Plan Info -->
@@ -201,6 +200,16 @@
             <!-- Summary Cards -->
             <div class="summary-grid" id="summaryGrid"></div>
 
+            <!-- Battery comparison + recommendation -->
+            <div class="card comparison-card" id="comparisonCard">
+                <div class="comparison-header">
+                    <i data-icon="scale" data-size="18" class="card-icon"></i>
+                    <h3>Battery comparison</h3>
+                </div>
+                <div class="recommendation" id="recommendation"></div>
+                <div class="comparison-scroll"><table class="comparison-table" id="comparisonTable"></table></div>
+            </div>
+
             <!-- Chart Tabs -->
             <div class="card chart-card">
                 <div class="chart-tabs" id="chartTabs">
@@ -208,6 +217,7 @@
                     <button class="tab" data-tab="cost"><i data-icon="wallet" data-size="15"></i>Cost Breakdown</button>
                     <button class="tab" data-tab="solar"><i data-icon="arrow-left-right" data-size="15"></i>Import vs Export</button>
                     <button class="tab" data-tab="battery"><i data-icon="battery-medium" data-size="15"></i>Battery Simulation</button>
+                    <button class="tab" data-tab="size"><i data-icon="chart-spline" data-size="15"></i>Battery Size</button>
                     <button class="tab" data-tab="roi"><i data-icon="trending-up" data-size="15"></i>ROI</button>
                     <button class="tab" data-tab="heatmap"><i data-icon="calendar-days" data-size="15"></i>Heatmap</button>
                 </div>
