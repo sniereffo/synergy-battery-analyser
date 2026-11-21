@@ -289,10 +289,16 @@ async function fetchDataFiles() {
             let label = f.name.replace(/\.json$/, '').replace(/_/g, ' ');
             if (f.tariff_label) label += ` · ${f.tariff_label}`;
             if (f.days) label += ` · ${f.days} days`;
+            // Old-format or unreadable files are listed (so they aren't a
+            // mystery) but can't be selected.
+            if (f.compatible === false) {
+                opt.disabled = true;
+                label += ` · ${f.note || 'not compatible'}`;
+            }
             opt.textContent = label;
             selector.appendChild(opt);
         });
-        if (previous && dataFiles[previous]) selector.value = previous;
+        if (previous && dataFiles[previous] && dataFiles[previous].compatible !== false) selector.value = previous;
     } catch (e) {
         // Silently ignore
     }
@@ -909,7 +915,7 @@ function projection() {
     if (annual === undefined) {
         annual = s.num_days ? s.period_savings_dollars / s.num_days * 365 : null;
     }
-    const isProjection = typeof s.is_projection === 'boolean' ? s.is_projection : s.num_days < 365;
+    const isProjection = typeof s.is_projection === 'boolean' ? s.is_projection : s.num_days < 360;
     let cost = inputs.battery_cost_dollars;
     if (cost === undefined) cost = parseFloat(document.getElementById('batteryCost').value) || null;
     return { annual, isProjection, cost: cost > 0 ? cost : null, days: s.num_days };

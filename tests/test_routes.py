@@ -185,12 +185,43 @@ def test_data_files_lists_metadata_sorted(client, data_dir):
 
     files = client.get("/api/data/files").json()
     assert files == [
-        {"name": "a_broken.json", "tariff_label": None, "start": None, "end": None, "days": 0},
+        {"name": "a_broken.json", "tariff_label": None, "start": None, "end": None, "days": 0,
+         "compatible": False, "note": "Unreadable file"},
         {"name": "b_2026-08-01_to_2026-08-03.json", "tariff_label": "EV2 TARIFF",
-         "start": "2026-08-01", "end": "2026-08-03", "days": 2},
+         "start": "2026-08-01", "end": "2026-08-03", "days": 2,
+         "compatible": True, "note": None},
         {"name": "c_single.json", "tariff_label": "MIDDAY SAVER",
-         "start": "2026-08-02", "end": "2026-08-02", "days": 1},
+         "start": "2026-08-02", "end": "2026-08-02", "days": 1,
+         "compatible": True, "note": None},
     ]
+
+
+# A cache file written by the pre-April-2026 client: raw parallel arrays.
+LEGACY_PAYLOAD = {
+    "chartType": "ELEC",
+    "kwHalfHourlyValues": [0.3] * 48,
+    "kwhHalfHourlyValuesGeneration": [0.0] * 48,
+    "retrieveIntervalDetails": [{"productCode": "EV Add on"}],
+}
+
+
+def test_data_files_flags_legacy_cache_as_incompatible(client, data_dir):
+    data_dir.mkdir(parents=True, exist_ok=True)
+    (data_dir / "2025-03-01_to_2026-02-28.json").write_text(json.dumps(LEGACY_PAYLOAD))
+    [info] = client.get("/api/data/files").json()
+    assert info["compatible"] is False
+    assert "Old format" in info["note"]
+    assert info["days"] == 0
+
+
+def test_analysing_legacy_cache_gives_clear_error(client, data_dir):
+    data_dir.mkdir(parents=True, exist_ok=True)
+    (data_dir / "old.json").write_text(json.dumps(LEGACY_PAYLOAD))
+    client.post("/api/analyse", json={"cached_file": "old.json", "battery_capacity_kwh": 15.0})
+    job = _poll_job(client)
+    assert job["status"] == "error"
+    assert "pre-April-2026" in job["error"]
+    assert "fetch the data again" in job["error"]
 
 
 def test_analyse_validates_date_range(client):
@@ -660,6 +691,19 @@ def test_auth_status_unexpected_services_error_is_200_with_error(client):
     assert app.state.login_finalized is False
 
 
+def test_auth_status_unexpected_error_drops_and_closes_the_client(client):
+    # A persistent failure must not loop: the broken client is discarded, so the
+    # next "Open Synergy login" starts a fresh browser rather than reusing it.
+    fake = FakeClient(services_error=RuntimeError("Aura blew up"))
+    app.state.synergy = fake
+    assert "error" in client.get("/api/auth/status").json()
+    assert app.state.synergy is None
+    assert fake.closed is True
+    # Polling again is a clean "not logged in", not the same error.
+    again = client.get("/api/auth/status").json()
+    assert again == {"logged_in": False, "services": [], "browser_open": False}
+
+
 def test_auth_status_error_text_is_truncated(client):
     app.state.synergy = FakeClient(services_error=KeyError("x" * 10_000))
     response = client.get("/api/auth/status")
@@ -777,7 +821,11 @@ def test_single_day_projection_warning_is_singular(client, data_dir):
 @pytest.mark.parametrize("num_days,is_projection,warned", [
     (329, True, True),
     (330, True, False),
-    (364, True, False),
+    (359, True, False),
+    # Synergy may not have published yesterday yet, so a default 12-month run
+    # often has 363-364 days: that still counts as a full year.
+    (360, False, False),
+    (364, False, False),
     (365, False, False),
 ])
 def test_projection_flag_and_warning_thresholds(client, data_dir, num_days, is_projection, warned):

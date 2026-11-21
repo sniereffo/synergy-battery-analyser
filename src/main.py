@@ -34,8 +34,17 @@ SESSION_EXPIRED_MSG = (
     "please log in again."
 )
 # Below this many days of data, the 12-month projection gets a warning; from
-# here up to 365 days it is still a projection but close enough to a year.
+# here up to FULL_YEAR_DAYS it is still a projection but close enough to a year.
 PROJECTION_WARNING_DAYS = 330
+# A run with at least this many days counts as a full year (not a projection).
+# The default range ends yesterday, which Synergy may not have published yet,
+# so a "12 month" run often has 363-364 days; those shouldn't read as projected.
+FULL_YEAR_DAYS = 360
+
+LEGACY_CACHE_MESSAGE = (
+    "was saved by the pre-April-2026 version of this tool (old Synergy API) and "
+    "can't be analysed — fetch the data again from Synergy."
+)
 MAX_LISTED_MISSING_DATES = 5
 
 
@@ -190,13 +199,31 @@ def list_plans(tariff: str | None = None):
     }
 
 
+def _is_legacy_payload(payload) -> bool:
+    """True for raw responses cached by the old (pre-April-2026) API client.
+
+    Those are dicts of parallel half-hourly arrays (e.g. kwHalfHourlyValues)
+    rather than this version's {"intervals": [...]} payload.
+    """
+    return (
+        isinstance(payload, dict)
+        and "intervals" not in payload
+        and any(k.lower().endswith("halfhourlyvalues") for k in payload)
+    )
+
+
 def _cache_file_info(path: Path) -> dict:
-    info = {"name": path.name, "tariff_label": None, "start": None, "end": None, "days": 0}
+    info = {"name": path.name, "tariff_label": None, "start": None, "end": None,
+            "days": 0, "compatible": True, "note": None}
     try:
         payload = json.loads(path.read_text())
+        if _is_legacy_payload(payload):
+            info.update(compatible=False, note="Old format (pre-April 2026) — fetch again")
+            return info
         intervals = payload["intervals"] if isinstance(payload, dict) else payload
         dates = sorted({str(i["timestamp"])[:10] for i in intervals})
     except (OSError, ValueError, KeyError, TypeError):
+        info.update(compatible=False, note="Unreadable file")
         return info  # unreadable / foreign JSON: still list it by name
     if isinstance(payload, dict):
         info["tariff_label"] = payload.get("tariff_label")
@@ -207,7 +234,7 @@ def _cache_file_info(path: Path) -> dict:
 
 @app.get("/api/data/files")
 def list_data_files():
-    """Cached interval files: [{name, tariff_label, start, end, days}]."""
+    """Cached interval files: [{name, tariff_label, start, end, days, compatible, note}]."""
     if not DATA_DIR.exists():
         return []
     return [_cache_file_info(f) for f in sorted(DATA_DIR.glob("*.json"), key=lambda f: f.name)]
@@ -286,10 +313,14 @@ async def auth_status():
             "browser_open": bool(getattr(client, "window_open", False)),
         }
     except Exception as e:  # noqa: BLE001 — status polling must never 500
+        # Drop the broken session entirely so the next "Open Synergy login"
+        # starts a fresh browser instead of reusing a client stuck in this state.
         _reset_session_state()
+        if app.state.synergy is client:
+            app.state.synergy = None
+        await _close_quietly(client)
         return {
-            "logged_in": False, "services": [],
-            "browser_open": bool(getattr(client, "window_open", False)),
+            "logged_in": False, "services": [], "browser_open": False,
             "error": "Could not load your Synergy services: "
                      + (_truncate(e) or type(e).__name__),
         }
@@ -313,6 +344,8 @@ def _load_cached(name: str) -> tuple[list[dict], str | None]:
         raise HTTPException(404, f"Cached file not found: {_truncate(name, 100)}")
     try:
         payload = json.loads(path.read_text())
+        if _is_legacy_payload(payload):
+            raise HTTPException(400, f"Cached file {path.name} {LEGACY_CACHE_MESSAGE}")
         intervals = payload["intervals"] if isinstance(payload, dict) else payload
         for i in intervals:
             i["timestamp"] = datetime.fromisoformat(i["timestamp"])
@@ -584,7 +617,7 @@ async def _do_analysis(req: AnalyseRequest, job: dict) -> dict:
     # Savings are projected to 12 months from however many days were analysed.
     # Short ranges are a rough estimate: solar and usage vary by season.
     annual_savings = (net_savings / 100) / num_days * 365 if num_days else None
-    is_projection = num_days < 365
+    is_projection = num_days < FULL_YEAR_DAYS
     payback_years = None
     if req.battery_cost_dollars and annual_savings is not None and annual_savings > 0:
         payback_years = round(req.battery_cost_dollars / annual_savings, 1)
