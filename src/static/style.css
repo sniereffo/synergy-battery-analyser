@@ -272,6 +272,15 @@ body::before {
     pointer-events: none;
 }
 
+.auth-actions {
+    margin-top: -8px;
+}
+
+.btn-small {
+    padding: 6px 12px;
+    font-size: 0.8rem;
+}
+
 .auth-step.completed .field-label::after {
     content: ' ✓';
     color: var(--accent-green);
@@ -673,6 +682,41 @@ input[type="number"] {
     width: 8px;
     height: 8px;
     border-radius: 2px;
+}
+
+.plan-range {
+    margin-left: auto;
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    color: var(--text-muted);
+}
+
+/* === Warning Banner === */
+
+.warning-banner {
+    background: var(--bg-card);
+    border: 1px solid var(--tariff-anytime);
+    border-left-width: 4px;
+    border-radius: var(--radius-lg);
+    padding: 14px 20px;
+    margin-bottom: 20px;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+.warning-title {
+    font-weight: 600;
+    color: var(--tariff-anytime);
+    margin-bottom: 6px;
+}
+
+.warning-banner ul {
+    margin: 0;
+    padding-left: 18px;
+}
+
+.warning-banner li + li {
+    margin-top: 2px;
 }
 
 /* === Summary Cards === */

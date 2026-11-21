@@ -34,7 +34,10 @@ let services = [];
 let selectedServiceId = null;
 let loggedIn = false;
 let statusPoll = null;
-let currentCacheFile = null;
+let dataFiles = {};      // saved dataset name -> {name, tariff_label, start, end, days}
+let planDetails = {};    // plan name -> {periods: [{name, key}], flat}
+let ratesRenderedFor = null;  // what the rate fields currently show (avoid clobbering edits)
+let ratesSeq = 0;             // guards against out-of-order rate fetches
 
 // Display labels for the API's tariff-period column names.
 const PERIOD_LABELS = {
@@ -54,27 +57,50 @@ const TARIFF_COLORS = {
     'OFF_PEAK(AM)': '#60a5fa', 'Off Peak (AM)': '#60a5fa',
     'SUPER_OFFPEAK': '#22c55e', 'Super Off Peak': '#22c55e',
     'OVERNIGHT': '#8b5cf6', 'Overnight': '#8b5cf6',
+    'Anytime': '#f59e0b',
 };
 
 function getTariffColor(name) {
     return TARIFF_COLORS[name] || '#64748b';
 }
 
+// === DOM helpers (never interpolate external strings into innerHTML) ===
+
+// el('div', {class: 'x', onclick: fn}, 'text', childNode, ...)
+function el(tag, attrs, ...children) {
+    const node = document.createElement(tag);
+    Object.entries(attrs || {}).forEach(([k, v]) => {
+        if (v === null || v === undefined || v === false) return;
+        if (k === 'class') node.className = v;
+        else if (k.startsWith('on') && typeof v === 'function') node.addEventListener(k.slice(2), v);
+        else if (k in node && typeof v !== 'string') node[k] = v;
+        else node.setAttribute(k, v === true ? '' : v);
+    });
+    children.flat().forEach(c => {
+        if (c === null || c === undefined || c === false) return;
+        node.appendChild(typeof c === 'string' || typeof c === 'number' ? document.createTextNode(String(c)) : c);
+    });
+    return node;
+}
+
+function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, ch => (
+        { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]
+    ));
+}
+
 // === Init ===
 
-document.addEventListener('DOMContentLoaded', () => {
-    // Default date range: last 3 months (a full day-by-day year fetch is slow —
-    // the portal only serves one day of half-hourly data per request).
+document.addEventListener('DOMContentLoaded', async () => {
+    // Default date range: last 3 months (longer ranges take longer to fetch).
     const today = new Date();
     const start = new Date(today);
     start.setMonth(start.getMonth() - 3);
     document.getElementById('endDate').value = fmt(today);
     document.getElementById('startDate').value = fmt(start);
-
-    // Fetch rate schedules, plans and cached data files
-    fetchRateSchedules();
-    fetchPlans();
-    fetchDataFiles();
+    setDateBounds(null, fmt(today));
+    ['startDate', 'endDate'].forEach(id =>
+        document.getElementById(id).addEventListener('change', clampDates));
 
     // Tab switching
     document.getElementById('chartTabs').addEventListener('click', (e) => {
@@ -90,10 +116,17 @@ document.addEventListener('DOMContentLoaded', () => {
     window.addEventListener('resize', () => {
         if (currentChart) currentChart.resize();
     });
+
+    // Fetch rate schedules, plans and cached data files, then render the rates.
+    await Promise.all([fetchRateSchedules(), fetchPlans(), fetchDataFiles()]);
+    refreshRates({ force: true });
+    checkInitialStatus();
 });
 
+// YYYY-MM-DD in local time (toISOString would shift to UTC).
 function fmt(d) {
-    return d.toISOString().split('T')[0];
+    const pad = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
 // === Rate Schedules ===
@@ -105,76 +138,135 @@ async function fetchRateSchedules() {
     } catch (e) {
         // Rate schedules are optional prefill; silently ignore fetch errors.
     }
-    // Render defaults so the panel isn't empty before a service is chosen.
-    renderRateFields(null);
 }
 
-// Fetch current rates for a tariff (live from Synergy, falling back to
-// defaults server-side) and render the editable fields.
-async function fetchAndRenderRates(tariffLabel) {
-    let data = null;
-    try {
-        const res = await fetch('/api/rates?tariff=' + encodeURIComponent(tariffLabel || ''));
-        if (res.ok) data = await res.json();
-    } catch (e) {
-        // fall back to local prefill below
+// Built-in prefill schedule for a plan name or tariff label (case-insensitive).
+function localSchedule(name) {
+    if (!rateSchedules || !name) return null;
+    const key = name.trim().toUpperCase();
+    const match = Object.keys(rateSchedules).find(k => k.toUpperCase() === key);
+    return match ? rateSchedules[match] : null;
+}
+
+// Tariff label of the data that will be analysed: the saved dataset's label,
+// or the selected service's tariff for a live fetch.
+function currentTariffLabel() {
+    const cached = document.getElementById('dataSource').value;
+    if (cached) return (dataFiles[cached] && dataFiles[cached].tariff_label) || null;
+    const sel = document.getElementById('serviceSelector');
+    return sel && sel.selectedOptions[0] ? (sel.selectedOptions[0].dataset.tariff || null) : null;
+}
+
+// Re-render the editable rate fields for the selected plan. With "My current
+// plan" ("" value) the plan is resolved from the data's tariff label. Skips
+// re-rendering (which would discard edits) unless what's shown would change.
+async function refreshRates({ force = false } = {}) {
+    const explicitPlan = document.getElementById('planSelector').value || null;
+    const tariffLabel = currentTariffLabel();
+    const renderKey = explicitPlan ? 'plan:' + explicitPlan : 'data:' + (tariffLabel || '');
+    if (!force && renderKey === ratesRenderedFor) return;
+    const seq = ++ratesSeq;
+
+    let planId = explicitPlan;
+    if (!planId && tariffLabel) {
+        try {
+            const res = await fetch('/api/plans?tariff=' + encodeURIComponent(tariffLabel));
+            if (res.ok) planId = (await res.json()).default || null;
+        } catch (e) {
+            // unknown plan -> data-driven fallback below
+        }
     }
-    renderRateFields(tariffLabel, data);
+
+    const rateSource = planId || tariffLabel;
+    let fetched = null;
+    if (rateSource) {
+        try {
+            const res = await fetch('/api/rates?tariff=' + encodeURIComponent(rateSource));
+            if (res.ok) fetched = await res.json();
+        } catch (e) {
+            // fall back to local prefill below
+        }
+    }
+    if (seq !== ratesSeq) return;  // a newer refresh superseded this one
+    renderRateFields({ planId, tariffLabel, explicit: !!explicitPlan, fetched });
+    ratesRenderedFor = renderKey;
 }
 
-// Render editable per-period rate fields. Uses server-fetched rates when
-// provided (live from Synergy or default), else the local prefill schedule.
-function renderRateFields(tariffLabel, fetched) {
+// Render editable per-period rate fields. A known plan shows exactly its own
+// periods (one "Anytime" field for a flat plan); otherwise the periods the
+// rate lookup returned. Blank fields mean "not overridden".
+function renderRateFields({ planId, tariffLabel, explicit, fetched }) {
     const container = document.getElementById('tariffFields');
-    const key = (tariffLabel || '').trim().toUpperCase();
 
-    let supply, rates, source;
+    let supply = null, rates = {}, source = 'none';
     if (fetched && fetched.rates && Object.keys(fetched.rates).length) {
         supply = fetched.supply_charge_cents;
         rates = fetched.rates;
         source = fetched.source;
     } else {
-        // Fall back to the first known schedule so the panel is never all-zero.
-        let schedule = rateSchedules && rateSchedules[key];
-        if (!schedule && rateSchedules) {
-            const firstKey = Object.keys(rateSchedules)[0];
-            schedule = firstKey ? rateSchedules[firstKey] : null;
+        const schedule = localSchedule(planId) || localSchedule(tariffLabel);
+        if (schedule) {
+            supply = schedule.supply_charge_cents;
+            rates = schedule.rates || {};
+            source = 'default';
         }
-        supply = schedule ? schedule.supply_charge_cents : 116.0505;
-        rates = schedule ? schedule.rates : {};
-        source = rateSchedules && rateSchedules[key] ? 'default' : 'none';
     }
-    const periods = Object.keys(rates).length ? Object.keys(rates) : ALL_PERIODS;
 
-    let html = `
-        <div class="tariff-field">
-            <label>Supply charge</label>
-            <input type="number" class="input" id="tariffSupplyCharge" step="0.0001" value="${supply != null ? supply : ''}">
-            <span class="tariff-unit">c/day</span>
-        </div>`;
-    periods.forEach(p => {
-        const r = rates[p] !== undefined ? rates[p] : 0;
-        html += `
-            <div class="tariff-field">
-                <label>${PERIOD_LABELS[p] || p}</label>
-                <input type="number" class="input" step="0.0001" value="${r}" data-period="${p}">
-                <span class="tariff-unit">c/kWh</span>
-            </div>`;
-    });
-    if (source === 'synergy') {
-        html += `<div class="field-hint">✓ Rates sourced live from Synergy — adjust if your plan differs.</div>`;
-    } else if (tariffLabel && source !== 'default') {
-        html += `<div class="field-hint">No preset for "${tariffLabel}" — showing defaults; adjust to your plan's rates.</div>`;
+    // [{name, key}] — label + API period column the rate applies to.
+    let periods;
+    if (planId && planDetails[planId]) {
+        periods = planDetails[planId].periods;
+    } else {
+        const keys = Object.keys(rates).length ? Object.keys(rates) : ALL_PERIODS;
+        periods = keys.map(k => ({ name: PERIOD_LABELS[k] || k, key: k }));
     }
-    container.innerHTML = html;
+
+    const rateField = (label, unit, inputAttrs) => el('div', { class: 'tariff-field' },
+        el('label', {}, label),
+        el('input', { type: 'number', class: 'input', step: '0.0001', placeholder: '—', ...inputAttrs }),
+        el('span', { class: 'tariff-unit' }, unit),
+    );
+
+    const nodes = [rateField('Supply charge', 'c/day', {
+        id: 'tariffSupplyCharge', value: supply != null ? String(supply) : '',
+    })];
+    periods.forEach(p => {
+        const r = rates[p.key];
+        nodes.push(rateField(p.name, 'c/kWh', {
+            value: r !== undefined && r !== null ? String(r) : '', 'data-period': p.key,
+        }));
+    });
+
+    let hint = null;
+    if (source === 'synergy') {
+        hint = '✓ Rates sourced live from Synergy — adjust if your plan differs.';
+    } else if (source === 'default') {
+        hint = 'Using built-in default rates — adjust to match your bill.';
+    } else if (!explicit && !tariffLabel) {
+        hint = 'Log in or choose a saved dataset to load your plan\'s rates, or enter them here.';
+    } else {
+        hint = `No preset for "${tariffLabel || planId}" — enter your plan's rates (blank fields are not priced).`;
+    }
+    if (!explicit && planId && tariffLabel) {
+        nodes.push(el('div', { class: 'field-hint' }, `Your tariff "${tariffLabel}" is priced as ${planId}.`));
+    } else if (!explicit && !planId && tariffLabel) {
+        nodes.push(el('div', { class: 'field-hint' },
+            `"${tariffLabel}" isn't a known plan — periods are priced as labelled in your data.`));
+    }
+    nodes.push(el('div', { class: 'field-hint' }, hint));
+    container.replaceChildren(...nodes);
 }
+
+// === Saved datasets ===
 
 async function fetchDataFiles() {
     try {
         const res = await fetch('/api/data/files');
         if (!res.ok) return;
-        const files = await res.json();
+        const files = (await res.json()).map(f => (typeof f === 'string' ? { name: f } : f));
         const selector = document.getElementById('dataSource');
+        const previous = selector.value;
+        dataFiles = {};
         // Clear existing file options (keep first "Fetch live" option)
         while (selector.options.length > 1) selector.remove(1);
         if (files.length) {
@@ -183,36 +275,93 @@ async function fetchDataFiles() {
             divider.textContent = '— Saved —';
             selector.appendChild(divider);
         }
-        files.forEach(name => {
+        files.forEach(f => {
+            dataFiles[f.name] = f;
             const opt = document.createElement('option');
-            opt.value = name;
-            opt.textContent = name.replace('.json', '').replace(/_/g, ' ');
+            opt.value = f.name;
+            let label = f.name.replace(/\.json$/, '').replace(/_/g, ' ');
+            if (f.tariff_label) label += ` · ${f.tariff_label}`;
+            if (f.days) label += ` · ${f.days} days`;
+            opt.textContent = label;
             selector.appendChild(opt);
         });
+        if (previous && dataFiles[previous]) selector.value = previous;
     } catch (e) {
         // Silently ignore
     }
 }
 
+function setDateBounds(min, max) {
+    ['startDate', 'endDate'].forEach(id => {
+        const input = document.getElementById(id);
+        input.min = min || '';
+        input.max = max || '';
+    });
+}
+
+// Keep the date inputs within their min/max and in order.
+function clampDates() {
+    ['startDate', 'endDate'].forEach(id => {
+        const input = document.getElementById(id);
+        if (!input.value) return;
+        if (input.min && input.value < input.min) input.value = input.min;
+        if (input.max && input.value > input.max) input.value = input.max;
+    });
+}
+
 function onDataSourceChange() {
     const cached = document.getElementById('dataSource').value;
+    const file = cached ? dataFiles[cached] : null;
     // A saved dataset needs no Synergy connection — hide the connect step.
     document.getElementById('connectCard').classList.toggle('hidden', !!cached);
-    document.getElementById('dataSourceHint').textContent = cached
-        ? 'Using a saved dataset — no Synergy connection needed.'
-        : 'A live fetch needs you to log in below. Saved datasets load instantly with no connection.';
+
+    const hint = document.getElementById('dataSourceHint');
+    if (cached) {
+        const parts = [];
+        if (file && file.tariff_label) parts.push(`Tariff: ${file.tariff_label}`);
+        if (file && file.days) parts.push(`${file.days} days`);
+        if (file && file.start && file.end) parts.push(`${file.start} → ${file.end}`);
+        hint.textContent = (parts.length ? parts.join(' · ') + '. ' : '')
+            + 'Narrow the date range below to analyse part of it — no Synergy connection needed.';
+    } else {
+        hint.textContent = 'A live fetch needs you to log in below. Saved datasets load instantly with no connection.';
+    }
+
+    if (file && file.start && file.end) {
+        document.getElementById('startDate').value = file.start;
+        document.getElementById('endDate').value = file.end;
+        setDateBounds(file.start, file.end);
+    } else {
+        setDateBounds(null, fmt(new Date()));
+        clampDates();
+    }
+
     const bt = document.querySelector('#analyseBtn .btn-text');
     if (bt) bt.textContent = cached ? 'Analyse' : 'Fetch & Analyse';
     document.getElementById('analyseBtn').disabled = !canAnalyse();
+    refreshRates();
 }
 
 // === Toast ===
 
 function toast(msg, type = '') {
-    const el = document.getElementById('toast');
-    el.textContent = msg;
-    el.className = 'toast ' + type + ' visible';
-    setTimeout(() => el.classList.remove('visible'), 3500);
+    const node = document.getElementById('toast');
+    node.textContent = msg;
+    node.className = 'toast ' + type + ' visible';
+    clearTimeout(toast._timer);
+    toast._timer = setTimeout(() => node.classList.remove('visible'), type === 'error' ? 6000 : 3500);
+}
+
+// Best-effort human message from a failed fetch Response.
+async function responseError(res, fallback) {
+    const text = await res.text().catch(() => '');
+    try {
+        const body = JSON.parse(text);
+        if (body && body.detail) return typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail);
+    } catch (e) {
+        // not JSON
+    }
+    return text || fallback || `HTTP ${res.status}`;
 }
 
 // === Auth Flow (browser-assisted) ===
@@ -230,19 +379,24 @@ async function openLogin() {
     btn.textContent = 'Opening browser…';
     try {
         const res = await fetch('/api/auth/open-login', { method: 'POST' });
-        if (!res.ok) throw new Error(await res.text());
+        if (!res.ok) throw new Error(await responseError(res, 'Could not open the login browser'));
+        btn.textContent = 'Waiting for login…';
         document.getElementById('loginProgress').classList.remove('hidden');
         setStatus('connecting', 'Waiting for login…');
         startStatusPolling();
     } catch (e) {
         toast('Could not open login: ' + e.message, 'error');
-        btn.disabled = false;
-        btn.textContent = 'Open Synergy login';
+        resetLoginUI();
     }
 }
 
-function startStatusPolling() {
+function stopStatusPolling() {
     if (statusPoll) clearInterval(statusPoll);
+    statusPoll = null;
+}
+
+function startStatusPolling() {
+    stopStatusPolling();
     statusPoll = setInterval(pollStatus, 2000);
     pollStatus();
 }
@@ -251,34 +405,96 @@ async function pollStatus() {
     try {
         const res = await fetch('/api/auth/status');
         const data = await res.json();
+        if (!statusPoll) return;  // polling was stopped while this was in flight
         if (data.logged_in) {
+            stopStatusPolling();
             loggedIn = true;
             services = data.services || [];
-            clearInterval(statusPoll);
-            statusPoll = null;
             onLoggedIn();
+        } else if (data.browser_open === false) {
+            // The user closed the login window before finishing.
+            stopStatusPolling();
+            resetLoginUI();
+            toast('Login window was closed — click "Open Synergy login" to try again.', 'error');
         }
     } catch (e) {
         // transient — keep polling
     }
 }
 
-function onLoggedIn() {
+// On page load, pick up an existing session (e.g. after a page refresh).
+async function checkInitialStatus() {
+    try {
+        const res = await fetch('/api/auth/status');
+        const data = await res.json();
+        if (data.logged_in) {
+            loggedIn = true;
+            services = data.services || [];
+            onLoggedIn({ quiet: true });
+        } else if (data.browser_open) {
+            document.getElementById('loginBtn').disabled = true;
+            document.getElementById('loginBtn').textContent = 'Waiting for login…';
+            document.getElementById('loginProgress').classList.remove('hidden');
+            setStatus('connecting', 'Waiting for login…');
+            startStatusPolling();
+        }
+    } catch (e) {
+        // server not reachable yet; the user can still click "Open Synergy login"
+    }
+}
+
+function onLoggedIn({ quiet = false } = {}) {
     setStatus('online', 'Connected');
     document.getElementById('loginProgress').classList.add('hidden');
     document.getElementById('stepLogin').classList.add('completed');
     const btn = document.getElementById('loginBtn');
     btn.textContent = 'Logged in';
     btn.disabled = true;
+    document.getElementById('authActions').classList.remove('hidden');
     populateServices();
-    toast('Logged in successfully', 'success');
+    if (!quiet) toast('Logged in successfully', 'success');
+}
+
+// Return the login UI to its initial "not connected" state.
+function resetLoginUI() {
+    stopStatusPolling();
+    loggedIn = false;
+    services = [];
+    selectedServiceId = null;
+    setStatus('offline', 'Not connected');
+    document.getElementById('loginProgress').classList.add('hidden');
+    document.getElementById('stepLogin').classList.remove('completed');
+    const btn = document.getElementById('loginBtn');
+    btn.textContent = 'Open Synergy login';
+    btn.disabled = false;
+    document.getElementById('authActions').classList.add('hidden');
+    document.getElementById('stepService').classList.add('disabled');
+    document.getElementById('serviceSelector').replaceChildren();
+    // Make sure the connect step is visible for a live fetch.
+    if (!document.getElementById('dataSource').value) {
+        document.getElementById('connectCard').classList.remove('hidden');
+    }
+    document.getElementById('analyseBtn').disabled = !canAnalyse();
+}
+
+// "Log out / reconnect": drop the server-side browser session and start over.
+async function resetLogin() {
+    try {
+        const res = await fetch('/api/auth/reset', { method: 'POST' });
+        if (!res.ok) throw new Error(await responseError(res, 'Could not reset the session'));
+        resetLoginUI();
+        refreshRates();
+        toast('Logged out of Synergy', 'success');
+    } catch (e) {
+        toast('Log out failed: ' + e.message, 'error');
+    }
 }
 
 function populateServices() {
     const step = document.getElementById('stepService');
     step.classList.remove('disabled');
     const sel = document.getElementById('serviceSelector');
-    sel.innerHTML = '';
+    sel.replaceChildren();
     services.forEach(s => {
         const opt = document.createElement('option');
         opt.value = s.service_id;
@@ -297,16 +513,15 @@ async function fetchPlans() {
         const res = await fetch('/api/plans');
         if (!res.ok) return;
         const data = await res.json();
+        planDetails = data.details || {};
         ['planSelector', 'resultsPlanSelector'].forEach(id => {
             const sel = document.getElementById(id);
             if (!sel) return;
-            sel.innerHTML = '';
-            (data.plans || []).forEach(name => {
-                const opt = document.createElement('option');
-                opt.value = name;
-                opt.textContent = name;
-                sel.appendChild(opt);
-            });
+            sel.replaceChildren();
+            // "" = use the plan matching the data's own tariff (sends plan_id null).
+            sel.appendChild(el('option', { value: '' }, 'My current plan (from data)'));
+            (data.plans || []).forEach(name => sel.appendChild(el('option', { value: name }, name)));
+            sel.value = '';
         });
     } catch (e) {
         // plans are optional; ignore
@@ -319,31 +534,19 @@ async function onResultsPlanChange() {
     document.getElementById('planSelector').value = plan;
     // Load the new plan's rates into the (hidden) rate fields before re-running,
     // otherwise the previous plan's rates would be sent.
-    await fetchAndRenderRates(plan);
+    await refreshRates({ force: true });
     runAnalysis();
 }
 
 async function onServiceChange() {
     const sel = document.getElementById('serviceSelector');
-    selectedServiceId = sel.value;
-    const tariff = sel.selectedOptions[0] ? sel.selectedOptions[0].dataset.tariff : '';
-
-    // Default the plan selector to the plan matching this tariff.
-    try {
-        const res = await fetch('/api/plans?tariff=' + encodeURIComponent(tariff || ''));
-        const data = await res.json();
-        if (data.default) document.getElementById('planSelector').value = data.default;
-    } catch (e) {
-        // ignore; keep whatever plan is selected
-    }
-    const planId = document.getElementById('planSelector').value || tariff;
-    await fetchAndRenderRates(planId);
+    selectedServiceId = sel.value || null;
+    await refreshRates();
     document.getElementById('analyseBtn').disabled = !canAnalyse();
 }
 
 async function onPlanChange() {
-    const planId = document.getElementById('planSelector').value;
-    await fetchAndRenderRates(planId);
+    await refreshRates({ force: true });
     // If we've already analysed, re-run to project the newly selected plan.
     // This reads from cache (set after the first fetch), so it's instant.
     if (analysisResult) runAnalysis();
@@ -356,44 +559,72 @@ function canAnalyse() {
 
 // === Analysis ===
 
+// Parse a numeric input; blank/invalid -> null (never silently 0).
+function numOrNull(input) {
+    if (!input || input.value.trim() === '') return null;
+    const v = parseFloat(input.value);
+    return Number.isFinite(v) ? v : null;
+}
+
 async function runAnalysis() {
     const btn = document.getElementById('analyseBtn');
     const btnText = btn.querySelector('.btn-text');
     const spinner = btn.querySelector('.btn-spinner');
 
-    btn.disabled = true;
-    btnText.textContent = 'Analysing...';
-    spinner.classList.remove('hidden');
-
     const cachedFile = document.getElementById('dataSource').value || null;
 
-    // Collect editable per-period rates and supply charge.
+    // Dates: required for a live fetch; optional filters for a saved dataset.
+    clampDates();
+    let startDate = document.getElementById('startDate').value || null;
+    let endDate = document.getElementById('endDate').value || null;
+    if (!cachedFile && (!startDate || !endDate)) {
+        toast('Choose a start and end date to fetch.', 'error');
+        return;
+    }
+    if (startDate && endDate && endDate < startDate) {
+        toast('End date must be on or after the start date.', 'error');
+        return;
+    }
+    if (cachedFile) {
+        const file = dataFiles[cachedFile];
+        const fullRange = file && startDate === file.start && endDate === file.end;
+        // Only filter when both are set and actually narrow the dataset.
+        if (fullRange || !startDate || !endDate) startDate = endDate = null;
+    }
+
+    // Editable per-period rates. A blank field is "not overridden" — the
+    // backend falls back to scraped/default rates (and warns if none exist).
     const rateOverrides = {};
     document.querySelectorAll('#tariffFields input[data-period]').forEach(input => {
-        rateOverrides[input.dataset.period] = parseFloat(input.value) || 0;
+        const v = numOrNull(input);
+        if (v !== null) rateOverrides[input.dataset.period] = v;
     });
-    const supplyInput = document.getElementById('tariffSupplyCharge');
-    const serviceSel = document.getElementById('serviceSelector');
-    const tariffLabel = serviceSel && serviceSel.selectedOptions[0]
-        ? serviceSel.selectedOptions[0].dataset.tariff : null;
+
+    const effPct = numOrNull(document.getElementById('roundTripEfficiency'));
+    const efficiency = effPct === null ? 0.9 : Math.min(Math.max(effPct, 1), 100) / 100;
 
     const payload = {
-        service_id: selectedServiceId,
-        tariff_label: tariffLabel || null,
+        service_id: cachedFile ? null : selectedServiceId,
+        // For a saved dataset the backend uses the label stored with the data.
+        tariff_label: cachedFile ? null : currentTariffLabel(),
         plan_id: document.getElementById('planSelector').value || null,
-        start_date: document.getElementById('startDate').value,
-        end_date: document.getElementById('endDate').value,
-        battery_capacity_kwh: parseFloat(document.getElementById('batteryCapacity').value) || 15,
-        inverter_capacity_kw: parseFloat(document.getElementById('inverterCapacity').value) || 5,
-        battery_cost_dollars: parseFloat(document.getElementById('batteryCost').value) || null,
+        start_date: startDate,
+        end_date: endDate,
+        battery_capacity_kwh: numOrNull(document.getElementById('batteryCapacity')) ?? 15,
+        inverter_capacity_kw: numOrNull(document.getElementById('inverterCapacity')) || 5,
+        round_trip_efficiency: efficiency,
+        battery_cost_dollars: numOrNull(document.getElementById('batteryCost')) || null,
         grid_topup: document.getElementById('gridTopup').checked,
-        feed_in_peak_cents: parseFloat(document.getElementById('feedInPeak').value) || 0,
-        feed_in_off_peak_cents: parseFloat(document.getElementById('feedInOffPeak').value) || 0,
-        supply_charge_cents: supplyInput ? parseFloat(supplyInput.value) : null,
-        rate_overrides: rateOverrides,
+        feed_in_peak_cents: numOrNull(document.getElementById('feedInPeak')) ?? 0,
+        feed_in_off_peak_cents: numOrNull(document.getElementById('feedInOffPeak')) ?? 0,
+        supply_charge_cents: numOrNull(document.getElementById('tariffSupplyCharge')),
+        rate_overrides: Object.keys(rateOverrides).length ? rateOverrides : null,
         cached_file: cachedFile,
     };
 
+    btn.disabled = true;
+    btnText.textContent = 'Analysing...';
+    spinner.classList.remove('hidden');
     showProgressModal();
 
     try {
@@ -403,12 +634,17 @@ async function runAnalysis() {
             body: JSON.stringify(payload),
         });
         if (!res.ok) {
-            const err = await res.json().catch(() => ({ detail: 'Could not start analysis' }));
-            throw new Error(err.detail || 'Could not start analysis');
+            const err = new Error(await responseError(res, 'Could not start analysis'));
+            if (res.status === 401) err.code = 'not_logged_in';
+            throw err;
         }
 
         const job = await pollAnalysis();
-        if (job.status === 'error') throw new Error(job.error || 'Analysis failed');
+        if (job.status === 'error') {
+            const err = new Error(job.error || 'Analysis failed');
+            err.code = job.error_code || null;
+            throw err;
+        }
 
         analysisResult = job.result;
         const daySet = new Set(analysisResult.intervals.map(iv => iv.timestamp.split('T')[0]));
@@ -419,17 +655,24 @@ async function runAnalysis() {
         if (!cachedFile) {
             // Point subsequent runs (e.g. switching plans) at the cached file so
             // they're instant instead of re-fetching from Synergy.
-            currentCacheFile = `${payload.start_date}_to_${payload.end_date}.json`;
+            const cacheName = analysisResult.cache_file;
             await fetchDataFiles();
             const ds = document.getElementById('dataSource');
-            if ([...ds.options].some(o => o.value === currentCacheFile)) {
-                ds.value = currentCacheFile;
+            if (cacheName && dataFiles[cacheName]) {
+                ds.value = cacheName;
                 onDataSourceChange();
             }
         }
     } catch (e) {
         hideProgressModal();
-        toast('Analysis failed: ' + e.message, 'error');
+        if (e.code === 'not_logged_in') {
+            // Session expired or the browser was closed — start the login over.
+            resetLoginUI();
+            if (!document.getElementById('resultsSection').classList.contains('hidden')) showSetup();
+            toast('Synergy session expired — please log in again. (' + e.message + ')', 'error');
+        } else {
+            toast('Analysis failed: ' + e.message, 'error');
+        }
     } finally {
         btn.disabled = !canAnalyse();
         btnText.textContent = document.getElementById('dataSource').value ? 'Analyse' : 'Fetch & Analyse';
@@ -479,11 +722,11 @@ function updateProgressModal(job) {
 function showResults() {
     document.getElementById('setupSection').classList.add('hidden');
     document.getElementById('resultsSection').classList.remove('hidden');
-    // Keep the results plan switcher in sync with the analysed plan.
-    const planSel = document.getElementById('planSelector');
-    const resSel = document.getElementById('resultsPlanSelector');
-    if (planSel.value) resSel.value = planSel.value;
+    // Keep the results plan switcher in sync with the analysed plan
+    // ("" = "My current plan (from data)").
+    document.getElementById('resultsPlanSelector').value = document.getElementById('planSelector').value;
     renderPlanBanner();
+    renderWarnings();
     renderSummary();
     renderChart();
 }
@@ -501,17 +744,43 @@ function showSetup() {
 
 function renderPlanBanner() {
     const plan = analysisResult.plan;
-    const periods = Object.entries(plan.rates).map(([name, rate]) =>
-        `<span class="plan-period">
-            <span class="dot" style="background:${getTariffColor(name)}"></span>
-            ${name} ${rate.toFixed(1)}c/kWh
-        </span>`
-    ).join('');
+    const s = analysisResult.summary;
+    const periods = Object.entries(plan.rates || {}).map(([name, rate]) =>
+        el('span', { class: 'plan-period' },
+            el('span', { class: 'dot', style: `background:${getTariffColor(name)}` }),
+            `${name} ${typeof rate === 'number' ? rate.toFixed(1) : '—'}c/kWh`,
+        ));
+    if (typeof plan.supply_charge_cents === 'number') {
+        periods.push(el('span', { class: 'plan-period' },
+            el('span', { class: 'dot', style: `background:${getTariffColor('Supply')}` }),
+            `Supply ${plan.supply_charge_cents.toFixed(1)}c/day`));
+    }
+    const range = s.data_start && s.data_end
+        ? el('span', { class: 'plan-range' }, `${s.data_start} → ${s.data_end} · ${s.num_days} days`)
+        : null;
 
-    document.getElementById('planBanner').innerHTML = `
-        <span class="plan-name">${plan.name}</span>
-        <div class="plan-periods">${periods}</div>
-    `;
+    document.getElementById('planBanner').replaceChildren(
+        el('span', { class: 'plan-name' }, plan.name || 'Plan'),
+        el('div', { class: 'plan-periods' }, periods),
+        range,
+    );
+}
+
+// === Warnings ===
+
+function renderWarnings() {
+    const banner = document.getElementById('warningBanner');
+    const warnings = (analysisResult && analysisResult.warnings) || [];
+    banner.classList.toggle('hidden', !warnings.length);
+    if (!warnings.length) {
+        banner.replaceChildren();
+        return;
+    }
+    banner.replaceChildren(
+        el('div', { class: 'warning-title' },
+            warnings.length === 1 ? 'Check this before trusting the numbers' : `Check these ${warnings.length} things before trusting the numbers`),
+        el('ul', {}, warnings.map(w => el('li', {}, String(w)))),
+    );
 }
 
 // === Summary Cards ===
@@ -526,13 +795,12 @@ function renderSummary() {
         { label: 'Payback', value: s.payback_years ? `${s.payback_years} yrs` : '—', sub: s.payback_years ? 'estimated' : 'enter battery cost', cls: s.payback_years ? 'positive' : 'neutral' },
     ];
 
-    document.getElementById('summaryGrid').innerHTML = cards.map(c => `
-        <div class="summary-card ${c.cls}">
-            <div class="summary-label">${c.label}</div>
-            <div class="summary-value">${c.value}</div>
-            ${c.sub ? `<div class="summary-sub">${c.sub}</div>` : ''}
-        </div>
-    `).join('');
+    document.getElementById('summaryGrid').replaceChildren(...cards.map(c =>
+        el('div', { class: `summary-card ${c.cls}` },
+            el('div', { class: 'summary-label' }, c.label),
+            el('div', { class: 'summary-value' }, c.value),
+            c.sub ? el('div', { class: 'summary-sub' }, c.sub) : null,
+        )));
 }
 
 // === Charts ===
@@ -636,14 +904,18 @@ function renderDailyUsage() {
 function renderCostBreakdown() {
     const intervals = analysisResult.intervals;
     const supplyPerDay = analysisResult.plan.supply_charge_cents;
+    // Supply is charged per distinct day present in the data — the same basis
+    // as summary.num_days — so the monthly bars sum to the summary totals.
+    const hasCredits = intervals.some(iv => typeof iv.export_credit_cents === 'number');
 
     // Group by month
     const months = {};
     intervals.forEach(iv => {
         const month = iv.timestamp.slice(0, 7);
-        if (!months[month]) months[month] = { _days: new Set() };
+        if (!months[month]) months[month] = { _days: new Set(), _credit: 0 };
         if (!months[month][iv.tariff_name]) months[month][iv.tariff_name] = 0;
         months[month][iv.tariff_name] += iv.cost_cents;
+        months[month]._credit += iv.export_credit_cents || 0;
         months[month]._days.add(iv.timestamp.split('T')[0]);
     });
 
@@ -669,12 +941,26 @@ function renderCostBreakdown() {
         barMaxWidth: 32,
     });
 
+    // Feed-in credits (negative), so the total is net like the summary's
+    // "Net Cost (no battery)".
+    if (hasCredits) {
+        series.push({
+            name: 'Feed-in credit',
+            type: 'bar',
+            stack: 'cost',
+            data: monthKeys.map(m => -+(months[m]._credit / 100).toFixed(2)),
+            itemStyle: { color: '#facc15' },
+            barMaxWidth: 32,
+        });
+    }
+
     // Total line
+    const totalName = hasCredits ? 'Net total' : 'Total';
     series.push({
-        name: 'Total',
+        name: totalName,
         type: 'line',
         data: monthKeys.map(m => {
-            let total = (months[m]._days.size * supplyPerDay);
+            let total = (months[m]._days.size * supplyPerDay) - months[m]._credit;
             tariffNames.forEach(n => total += (months[m][n] || 0));
             return +(total / 100).toFixed(2);
         }),
@@ -686,7 +972,7 @@ function renderCostBreakdown() {
 
     currentChart.setOption({
         ...baseOption(),
-        legend: { data: [...tariffNames, 'Supply', 'Total'], textStyle: { color: cssVar('--text-secondary'), fontSize: 11 }, top: 4 },
+        legend: { data: [...tariffNames, 'Supply', ...(hasCredits ? ['Feed-in credit'] : []), totalName], textStyle: { color: cssVar('--text-secondary'), fontSize: 11 }, top: 4 },
         xAxis: { type: 'category', data: monthKeys },
         yAxis: { type: 'value', name: 'AUD ($)', nameTextStyle: { fontSize: 11 } },
         series,
@@ -764,14 +1050,16 @@ function renderBatterySimulation() {
 
     // Render day selector
     const controls = document.getElementById('chartControls');
-    controls.innerHTML = `
-        <div class="day-selector">
-            <button class="btn btn-outline" onclick="changeBatteryDay(-1)" ${batteryDayIndex === 0 ? 'disabled' : ''}>&larr;</button>
-            <input type="date" class="day-picker" value="${dayKey}" min="${allDays[0]}" max="${allDays[allDays.length - 1]}" onchange="jumpToBatteryDay(this.value)">
-            <button class="btn btn-outline" onclick="changeBatteryDay(1)" ${batteryDayIndex >= allDays.length - 1 ? 'disabled' : ''}>&rarr;</button>
-            <span style="color:var(--text-muted);font-size:0.78rem;margin-left:8px">${batteryDayIndex + 1} / ${allDays.length}</span>
-        </div>
-    `;
+    controls.replaceChildren(el('div', { class: 'day-selector' },
+        el('button', { class: 'btn btn-outline', onclick: () => changeBatteryDay(-1), disabled: batteryDayIndex === 0 }, '←'),
+        el('input', {
+            type: 'date', class: 'day-picker', value: dayKey,
+            min: allDays[0], max: allDays[allDays.length - 1],
+            onchange: (e) => jumpToBatteryDay(e.target.value),
+        }),
+        el('button', { class: 'btn btn-outline', onclick: () => changeBatteryDay(1), disabled: batteryDayIndex >= allDays.length - 1 }, '→'),
+        el('span', { style: 'color:var(--text-muted);font-size:0.78rem;margin-left:8px' }, `${batteryDayIndex + 1} / ${allDays.length}`),
+    ));
 
     const times = dayData.map(iv => iv.timestamp.split('T')[1].slice(0, 5));
     const capacity = parseFloat(document.getElementById('batteryCapacity').value) || 15;
@@ -982,7 +1270,7 @@ function renderHeatmap() {
         series: calendarAndSeries.map(c => c.series),
         tooltip: {
             ...baseOption().tooltip,
-            formatter: (p) => `${p.data[0]}<br/>${p.data[1]} kWh`,
+            formatter: (p) => `${escapeHtml(p.data[0])}<br/>${escapeHtml(p.data[1])} kWh`,
         },
     });
 }

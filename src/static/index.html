@@ -79,6 +79,10 @@
                         <label class="field-label">Service / account</label>
                         <select id="serviceSelector" class="input" onchange="onServiceChange()"></select>
                     </div>
+
+                    <div class="auth-actions hidden" id="authActions">
+                        <button class="btn btn-outline btn-small" onclick="resetLogin()" title="Close the Synergy session so you can log in again (e.g. as a different account)">Log out / reconnect</button>
+                    </div>
                 </div>
 
                 <!-- Config Card -->
@@ -108,6 +112,7 @@
                                 <span class="date-sep">&rarr;</span>
                                 <input type="date" id="endDate" class="input">
                             </div>
+                            <div class="field-hint">For a saved dataset this defaults to the whole dataset — narrow it to analyse part.</div>
                         </div>
 
                         <div class="field-row">
@@ -126,15 +131,22 @@
                                 </div>
                             </div>
                             <div class="field-group">
+                                <label class="field-label">Round-trip efficiency</label>
+                                <div class="input-with-unit">
+                                    <input type="number" id="roundTripEfficiency" value="90" min="1" max="100" step="1" class="input">
+                                    <span class="unit">%</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="field-row">
+                            <div class="field-group">
                                 <label class="field-label">Battery cost <span class="optional">(optional)</span></label>
                                 <div class="input-with-unit">
                                     <input type="number" id="batteryCost" placeholder="—" min="0" step="100" class="input">
                                     <span class="unit">AUD</span>
                                 </div>
                             </div>
-                        </div>
-
-                        <div class="field-row">
                             <div class="field-group">
                                 <label class="field-label">Feed-in peak <span class="optional">(3pm–9pm)</span></label>
                                 <div class="input-with-unit">
@@ -178,6 +190,9 @@
 
             <!-- Plan Info -->
             <div class="plan-banner" id="planBanner"></div>
+
+            <!-- Warnings (unpriced periods, partial ranges, short fetches) -->
+            <div class="warning-banner hidden" id="warningBanner" role="status"></div>
 
             <!-- Summary Cards -->
             <div class="summary-grid" id="summaryGrid"></div>
