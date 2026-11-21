@@ -65,9 +65,9 @@ The window uses your computer's built-in web engine, so nothing extra is downloa
 
 - **Windows:** Microsoft Edge WebView2, included with Windows 11 and installed on most Windows 10 PCs (if it's missing, install the free "WebView2 Runtime" from Microsoft).
 - **Mac:** Apple's WebKit, built in.
-- **Linux:** WebKitGTK, which most desktops already have. If the window doesn't open, install it: `sudo apt install gir1.2-webkit2-4.1` (Debian/Ubuntu), `sudo dnf install webkit2gtk4.1` (Fedora) or `sudo pacman -S webkit2gtk-4.1` (Arch).
+- **Linux:** WebKitGTK, which most desktops already have. If the window doesn't open, install it: `sudo apt install gir1.2-webkit2-4.1` (Debian/Ubuntu), `sudo dnf install webkit2gtk4.1` (Fedora) or `sudo pacman -S webkit2gtk-4.1` (Arch). The downloadable Linux app uses your system's GTK libraries, so it needs a recent distribution (GLib 2.80 or newer: Ubuntu 24.04, Debian 13, Fedora 40, or later).
 
-The login window keeps its own cookies between runs, separate from your normal browser, so Synergy may recognise it next time. To clear them, delete the `webview` folder next to your saved data (see [Privacy and your data](#privacy-and-your-data)).
+The login window keeps its own cookies between runs, separate from your normal browser, so Synergy may recognise it next time. See [Privacy and your data](#privacy-and-your-data) for where they're kept and how to clear them.
 
 ## Using it
 
@@ -117,18 +117,18 @@ These are estimates for personal planning based on your past usage. They're not 
 ## Privacy and your data
 
 - **Your password** is typed into Synergy's own website, in the login window. The app never sees or stores it.
-- **Your session** stays inside the login window's page; the app asks that page to fetch your usage. It ends when you quit the app. The window's cookies are kept in a `webview` folder alongside the data folder below.
+- **Your session** stays inside the login window's page; the app asks that page to fetch your usage, and never handles your session itself. Like a normal browser, the login window keeps Synergy's cookies between runs (so Synergy may remember this device), in a `webview` folder beside the data folder below, e.g. `~/.local/share/synergy-analyser/webview` on Linux. Delete that folder to clear them.
 - **Your usage data** is saved only on your computer, in:
   - Windows: `%LOCALAPPDATA%\synergy-analyser\data`
   - Mac: `~/Library/Application Support/synergy-analyser/data`
   - Linux: `~/.local/share/synergy-analyser/data`
-- **Network use:** the app only talks to Synergy (your data, and the public plan pages for prices). It runs on your computer at `http://127.0.0.1` and isn't reachable from other devices.
+- **Network use:** the app itself only talks to Synergy (your data, and the public plan pages for prices). The login window shows Synergy's real website, which loads what it loads in any browser, including Google's reCAPTCHA and Synergy's own analytics. The app sends nothing anywhere else: no analytics or tracking of its own. It runs on your computer at `http://127.0.0.1` and isn't reachable from other devices.
 - **Your settings** are kept in your browser's local storage for this app.
 
 ## Troubleshooting
 
 - **The login window doesn't open.** Click **Open Synergy login** again. If it still fails, the message on screen says why. On Linux, install WebKitGTK (see [About the Synergy login window](#about-the-synergy-login-window)).
-- **Synergy says "Sorry, Please refresh the page and try again" when you log in.** That's Synergy's "are you human" check. Close the login window and try again in a minute; if it keeps happening, log in once on Synergy's website in your normal browser, then try again.
+- **Synergy says "Sorry, Please refresh the page and try again" when you log in.** That's Synergy's "are you human" check turning the login down. Close the login window, wait a minute and try again. If it keeps happening, please [open an issue](https://github.com/sniereffo/synergy-battery-analyser/issues).
 - **"Your Synergy session has expired".** Log in again; your data and settings are kept.
 - **A saved dataset is greyed out and marked "Old format".** It was saved by the version before Synergy changed its website in April 2026 and can't be read. Fetch the data again.
 - **Fewer days than you asked for.** Synergy only keeps a limited amount of history, and nothing before you moved in. The results cover the days returned, and a note lists any missing dates.
