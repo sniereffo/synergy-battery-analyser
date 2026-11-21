@@ -80,7 +80,7 @@ Your settings are remembered in your browser. **Reset to defaults** under the An
 ## Reading the results
 
 - **Summary cards** describe the battery selected in **Show battery**: grid import and export, net cost without and with the battery, annual saving and payback.
-- **Battery comparison** puts no battery and each of your batteries side by side. The bill is broken into **usage charges**, the **supply charge** and **feed-in credits**, adding up to **net cost**. The supply charge is a fixed daily fee: it's the same in every column because a battery can't reduce it.
+- **Battery comparison** puts no battery and each of your batteries side by side. The bill is broken into **usage charges**, the **supply charge** and **feed-in credits**, adding up to **net cost**. The supply charge is a fixed daily fee you pay even if you buy no grid power, so it's the same in every column. Only feed-in credits offset it, and covering it entirely would mean exporting enough while buying almost nothing — rare in practice.
 - **Recommendation:** the smallest size that captures 90% of the saving available up to 30 kWh, plus which of your batteries pays back fastest and which gives the best 10-year return.
 - **Charts:**
   - **Daily Usage:** grid import per day, split by tariff period, with solar export.
