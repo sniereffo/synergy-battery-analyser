@@ -5,10 +5,12 @@ cannot be scripted headlessly. So we launch a real (headed) Chromium window and
 let the user log in themselves. Once authenticated, we harvest a valid
 `aura.token` / `aura.context` from the page's own traffic and issue
 `MyAccount_ChartData` calls ourselves via the shared browser context (cookies
-attach automatically), fetching half-hourly usage one day at a time.
+attach automatically), fetching half-hourly usage in date-span requests
+(the portal returns every day in StartDate..EndDate per call).
 """
 
 import asyncio
+import json
 from datetime import date, timedelta
 
 from playwright.async_api import async_playwright
@@ -44,13 +46,21 @@ class SynergyBrowserClient:
         self._request_id = 1000
 
     async def start(self):
-        """Launch the browser and begin capturing Aura credentials."""
-        self._pw = await async_playwright().start()
-        self._browser = await self._pw.chromium.launch(headless=self._headless)
-        self._context = await self._browser.new_context()
-        self._page = await self._context.new_page()
-        self._context.on("request", self._on_request)
-        await self._page.goto(PORTAL_URL)
+        """Launch the browser and begin capturing Aura credentials.
+
+        On failure (e.g. Chromium not installed) everything already started is
+        torn down before the exception propagates.
+        """
+        try:
+            self._pw = await async_playwright().start()
+            self._browser = await self._pw.chromium.launch(headless=self._headless)
+            self._context = await self._browser.new_context()
+            self._page = await self._context.new_page()
+            self._context.on("request", self._on_request)
+            await self._page.goto(PORTAL_URL)
+        except BaseException:
+            await self.close()
+            raise
 
     def _on_request(self, request):
         """Sniff Aura POSTs to harvest the authenticated session token + context.
@@ -81,6 +91,16 @@ class SynergyBrowserClient:
     @property
     def logged_in(self) -> bool:
         return self._aura_token is not None and self._aura_context is not None
+
+    @property
+    def window_open(self) -> bool:
+        """True while the login page/window exists and has not been closed."""
+        return self._page is not None and not self._page.is_closed()
+
+    def _invalidate(self):
+        """Forget harvested credentials after the portal rejects the session."""
+        self._aura_token = None
+        self._aura_context = None
 
     async def wait_until_logged_in(self, timeout: float = 300.0, poll: float = 1.0):
         """Block until the user has logged in (Aura credentials observed).
@@ -126,10 +146,36 @@ class SynergyBrowserClient:
             form=form,
             headers={"Origin": "https://my.synergy.net.au"},
         )
+        if resp.status in (401, 403):
+            self._invalidate()
+            raise NotLoggedIn(f"Synergy session rejected (HTTP {resp.status}); log in again")
         if not resp.ok:
             raise RuntimeError(f"Aura call failed: HTTP {resp.status}")
-        body = await resp.json()
+        text = await resp.text()
+        try:
+            body = json.loads(text)
+        except ValueError:
+            # Expired sessions typically bounce to an HTML login page.
+            self._invalidate()
+            raise NotLoggedIn("Synergy returned a non-JSON response (session expired?); log in again")
+        if not isinstance(body, dict):
+            self._invalidate()
+            raise NotLoggedIn("Unexpected Synergy response shape; log in again")
+        if self._session_invalid(body):
+            self._invalidate()
+            raise NotLoggedIn("Synergy session is invalid or expired; log in again")
         return parse_ip_result(body)
+
+    @staticmethod
+    def _session_invalid(body: dict) -> bool:
+        """Detect Aura responses signalling an invalid/expired session."""
+        if body.get("exceptionEvent"):
+            return True
+        markers = ("invalid session", "invalid_session", "clientoutofsync", "session expired")
+        blob = json.dumps(
+            [body.get("event"), [a.get("error") for a in body.get("actions") or [] if isinstance(a, dict)]]
+        ).lower()
+        return any(m in blob for m in markers)
 
     async def _call_ip(self, ip_method: str, ip_input: dict) -> dict:
         """Invoke a Vlocity Integration Procedure and return its result."""
@@ -168,11 +214,11 @@ class SynergyBrowserClient:
         return services
 
     async def get_day(self, service_id: str, day: date) -> list[dict]:
-        """Fetch and parse a single day of half-hourly intervals."""
+        """Fetch and parse a single day (convenience wrapper; used by scripts/smoke_fetch.py)."""
         result = await self._call_ip(
             "MyAccount_ChartData", build_chartdata_input(service_id, day)
         )
-        return parse_halfhourly_response(result)
+        return self._parse(result)
 
     async def get_span(self, service_id: str, start: date, end: date) -> list[dict]:
         """Fetch and parse a contiguous span in a single request.
@@ -183,6 +229,12 @@ class SynergyBrowserClient:
         result = await self._call_ip(
             "MyAccount_ChartData", build_chartdata_input(service_id, start, end)
         )
+        return self._parse(result)
+
+    @staticmethod
+    def _parse(result: dict) -> list[dict]:
+        """Parse a ChartData result; a chunk with no Response array yields []
+        (handled in chartdata._extract_rows)."""
         return parse_halfhourly_response(result)
 
     async def get_range(
@@ -217,7 +269,14 @@ class SynergyBrowserClient:
             if progress:
                 progress(min(done_days, total_days), total_days, cend)
 
-        await asyncio.gather(*(fetch(i, s, e) for i, (s, e) in enumerate(chunks)))
+        # TaskGroup cancels the remaining chunk requests on the first failure.
+        try:
+            async with asyncio.TaskGroup() as tg:
+                for i, (s, e) in enumerate(chunks):
+                    tg.create_task(fetch(i, s, e))
+        except ExceptionGroup as eg:
+            # Surface the underlying error (e.g. NotLoggedIn) rather than the group.
+            raise eg.exceptions[0] from None
 
         intervals: list[dict] = []
         for i in range(len(chunks)):
@@ -226,9 +285,17 @@ class SynergyBrowserClient:
         return intervals
 
     async def close(self):
-        if self._context:
-            await self._context.close()
-        if self._browser:
-            await self._browser.close()
-        if self._pw:
-            await self._pw.stop()
+        """Tear down the browser. Idempotent; safe after a partial start()."""
+        context, browser, pw = self._context, self._browser, self._pw
+        self._context = self._browser = self._pw = self._page = None
+        for closer in (
+            context.close if context else None,
+            browser.close if browser else None,
+            pw.stop if pw else None,
+        ):
+            if closer is None:
+                continue
+            try:
+                await closer()
+            except Exception:
+                pass

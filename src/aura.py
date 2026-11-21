@@ -52,11 +52,6 @@ def build_chartdata_input(
     }
 
 
-def build_service_info_input(service_id: str) -> dict:
-    """Input for `MyAccount_ServiceAccountInformation`."""
-    return {"ServiceId": service_id}
-
-
 def build_apex_action(
     namespace: str,
     classname: str,
@@ -102,6 +97,12 @@ def build_message(actions: list[dict]) -> str:
     return json.dumps({"actions": actions})
 
 
+def _trunc(obj, limit: int = 300) -> str:
+    """repr() of `obj`, truncated so exception messages stay readable."""
+    text = repr(obj)
+    return text if len(text) <= limit else text[:limit] + "...[truncated]"
+
+
 def parse_ip_result(aura_response: dict) -> dict:
     """Pull the Integration Procedure's IPResult out of an Aura response.
 
@@ -109,10 +110,10 @@ def parse_ip_result(aura_response: dict) -> dict:
     ...}}]}`; the inner returnValue is a JSON string wrapping `{"IPResult": ...}`.
     """
     if not aura_response.get("actions"):
-        raise RuntimeError(f"Aura response had no actions: {aura_response!r}")
+        raise RuntimeError(f"Aura response had no actions: {_trunc(aura_response)}")
     action = aura_response["actions"][0]
     if action.get("state") and action["state"] != "SUCCESS":
-        raise RuntimeError(f"Aura action failed: {action.get('error')}")
+        raise RuntimeError(f"Aura action failed: {_trunc(action.get('error'))}")
     rv = action["returnValue"]
     # IP calls wrap the payload again as returnValue -> a JSON string; direct
     # controller calls may return the object directly. Handle both.
