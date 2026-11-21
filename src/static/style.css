@@ -1141,3 +1141,39 @@ input[type="number"] {
 .form-footer { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 10px; }
 .form-footer .field-hint { margin: 0; }
 .form-footer .link-btn { font-size: 0.8rem; color: var(--text-secondary); }
+
+/* === Fine print footer === */
+.fine-print {
+    margin: 36px 0 24px;
+    padding-top: 18px;
+    border-top: 1px solid var(--border);
+    color: var(--text-muted);
+    font-size: 0.76rem;
+    line-height: 1.55;
+}
+.fine-print-lead { display: flex; gap: 8px; align-items: flex-start; margin: 0 0 10px; }
+.fine-print-lead .icon { margin-top: 2px; }
+.fine-print summary {
+    cursor: pointer;
+    color: var(--text-secondary);
+    font-weight: 500;
+    width: fit-content;
+}
+.fine-print summary:hover { color: var(--accent-green); }
+.fine-print-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px 32px;
+    margin-top: 12px;
+}
+@media (max-width: 900px) { .fine-print-grid { grid-template-columns: 1fr; } }
+.fine-print h4 {
+    margin: 8px 0 4px;
+    font-size: 0.74rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-secondary);
+}
+.fine-print ul { margin: 0; padding-left: 16px; }
+.fine-print li { margin-bottom: 4px; }

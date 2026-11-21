@@ -243,6 +243,54 @@
             </div>
         </section>
 
+        <!-- Fine print: method and assumptions -->
+        <footer class="fine-print">
+            <p class="fine-print-lead"><i data-icon="triangle-alert" data-size="13"></i>All figures are estimates for personal planning, based on your past usage. They are not financial advice or a quote, and this tool is not affiliated with Synergy. Real savings depend on your battery, its controller, future usage, weather and tariff changes. Get quotes and independent advice before buying.</p>
+            <details>
+                <summary>How these figures are calculated</summary>
+                <div class="fine-print-grid">
+                    <section>
+                        <h4>Your data</h4>
+                        <ul>
+                            <li>Half-hourly grid import and solar export (kWh) from your interval meter, read from Synergy's My Account. The meter only sees what crosses it, so total solar generation and household use behind the meter are unknown.</li>
+                            <li>The battery works from each half-hour's net position (export minus import). Import and export in the same half-hour are offset against each other, which makes savings slightly conservative.</li>
+                            <li>"My current plan" uses the tariff period Synergy assigned to each half-hour. Projecting another plan re-sorts the same half-hours into that plan's time-of-use windows. Your usage is assumed to stay the same on any plan.</li>
+                            <li>Fetched data is saved on this computer only. Your Synergy password is entered on Synergy's own site and never reaches this app.</li>
+                        </ul>
+                    </section>
+                    <section>
+                        <h4>Prices</h4>
+                        <ul>
+                            <li>Rates and the daily supply charge come from Synergy's published plan pages when they can be reached. Otherwise built-in rates effective 1 July 2026 are used. Your edits override both. Prices are as published (including GST).</li>
+                            <li>Feed-in credits follow DEBS: 10c/kWh from 3pm to 9pm and 2c/kWh at other times (editable).</li>
+                            <li>Net cost = grid usage charges + supply charge (per day of data) − feed-in credits. It excludes concessions, discounts, fees, meter charges and rate changes during the period.</li>
+                        </ul>
+                    </section>
+                    <section>
+                        <h4>Battery model</h4>
+                        <ul>
+                            <li>Simulated half-hour by half-hour. The battery charges from excess solar; that solar is no longer exported, so its feed-in credit is lost and counted against the saving.</li>
+                            <li>It discharges to cover grid import only when that power is worth more than the stored energy: the import rate × round-trip efficiency must exceed the highest feed-in rate. So it won't spend stored solar on cheap Super Off Peak power.</li>
+                            <li>Round-trip losses (default 90%) are applied on discharge. The inverter limits charging and discharging per half-hour (kW × 0.5 h).</li>
+                            <li>The full stated capacity is usable: there is no reserve, degradation or ageing, and the battery never exports to the grid (no virtual power plant).</li>
+                            <li>Each battery starts the period with the charge it ends it with, so the period is treated as one cycle of a repeating year.</li>
+                            <li>Optional grid top-up buys only in the cheapest priced period, after the solar expected later in that same window, and the battery doesn't discharge in that window. It fills to capacity, so it can occasionally buy slightly more than gets used. It is skipped on flat-rate plans. The model knows each day's solar in advance, which a real controller doesn't.</li>
+                        </ul>
+                    </section>
+                    <section>
+                        <h4>Savings, payback and size</h4>
+                        <ul>
+                            <li>Saving = grid import avoided − feed-in lost − grid top-up cost. This equals net cost without a battery − net cost with one.</li>
+                            <li>Annual saving: a full year (360+ days of data) is used as measured. Shorter ranges are scaled to 12 months in a straight line and shown as projected. Seasons make this an estimate, and a warning appears under 330 days.</li>
+                            <li>Payback = installed price ÷ annual saving. 10-year return = annual saving × 10 − price. Neither includes financing, interest, price or tariff rises, battery degradation, replacement, maintenance or rebates (enter the price after any rebate).</li>
+                            <li>Recommended size: capacities from 0 to 30 kWh (or your largest battery) are simulated in 2.5 kWh steps. The smallest size that captures 90% of the largest saving is recommended. It reflects your usage, not price; compare prices in the table.</li>
+                            <li>All batteries compared share the same inverter, efficiency and top-up settings.</li>
+                        </ul>
+                    </section>
+                </div>
+            </details>
+        </footer>
+
         <!-- Toast -->
         <div class="toast hidden" id="toast"></div>
 
