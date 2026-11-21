@@ -92,6 +92,7 @@ function escapeHtml(s) {
 // === Init ===
 
 document.addEventListener('DOMContentLoaded', async () => {
+    hydrateIcons();
     // Default date range: the last 12 months (end = yesterday, the last full
     // day; start = end − 364 days). A full year captures seasonal variation,
     // so payback isn't a projection from a short window.
@@ -108,10 +109,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Tab switching
     document.getElementById('chartTabs').addEventListener('click', (e) => {
-        if (e.target.classList.contains('tab')) {
+        const tab = e.target.closest('.tab');  // clicks may land on the icon
+        if (tab) {
             document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-            e.target.classList.add('active');
-            currentTab = e.target.dataset.tab;
+            tab.classList.add('active');
+            currentTab = tab.dataset.tab;
             renderChart();
         }
     });
@@ -389,11 +391,11 @@ function setStatus(state, text) {
 async function openLogin() {
     const btn = document.getElementById('loginBtn');
     btn.disabled = true;
-    btn.textContent = 'Opening browser…';
+    setLoginLabel('Opening browser…');
     try {
         const res = await fetch('/api/auth/open-login', { method: 'POST' });
         if (!res.ok) throw new Error(await responseError(res, 'Could not open the login browser'));
-        btn.textContent = 'Waiting for login…';
+        setLoginLabel('Waiting for login…');
         document.getElementById('loginProgress').classList.remove('hidden');
         setStatus('connecting', 'Waiting for login…');
         startStatusPolling();
@@ -474,7 +476,7 @@ async function checkInitialStatus() {
             onLoggedIn({ quiet: true });
         } else if (data.browser_open) {
             document.getElementById('loginBtn').disabled = true;
-            document.getElementById('loginBtn').textContent = 'Waiting for login…';
+            setLoginLabel('Waiting for login…');
             document.getElementById('loginProgress').classList.remove('hidden');
             setStatus('connecting', 'Waiting for login…');
             startStatusPolling();
@@ -484,12 +486,18 @@ async function checkInitialStatus() {
     }
 }
 
+// Set the login button's text (and icon) without wiping the icon element.
+function setLoginLabel(text, iconName = 'log-in') {
+    const btn = document.getElementById('loginBtn');
+    btn.replaceChildren(icon(iconName) || '', el('span', { class: 'btn-label' }, text));
+}
+
 function onLoggedIn({ quiet = false } = {}) {
     setStatus('online', 'Connected');
     document.getElementById('loginProgress').classList.add('hidden');
     document.getElementById('stepLogin').classList.add('completed');
     const btn = document.getElementById('loginBtn');
-    btn.textContent = 'Logged in';
+    setLoginLabel('Logged in', 'circle-check');
     btn.disabled = true;
     document.getElementById('authActions').classList.remove('hidden');
     populateServices();
@@ -506,7 +514,7 @@ function resetLoginUI() {
     document.getElementById('loginProgress').classList.add('hidden');
     document.getElementById('stepLogin').classList.remove('completed');
     const btn = document.getElementById('loginBtn');
-    btn.textContent = 'Open Synergy login';
+    setLoginLabel('Open Synergy login');
     btn.disabled = false;
     document.getElementById('authActions').classList.add('hidden');
     document.getElementById('stepService').classList.add('disabled');
@@ -885,7 +893,7 @@ function renderWarnings() {
         return;
     }
     banner.replaceChildren(
-        el('div', { class: 'warning-title' },
+        el('div', { class: 'warning-title' }, icon('triangle-alert'),
             warnings.length === 1 ? 'Check this before trusting the numbers' : `Check these ${warnings.length} things before trusting the numbers`),
         el('ul', {}, warnings.map(w => el('li', {}, String(w)))),
     );
@@ -942,19 +950,19 @@ function renderSummary() {
     }
 
     const cards = [
-        { label: 'Grid Import', value: `${s.total_consumption_kwh.toLocaleString()} kWh`, sub: `${s.num_days} days`, cls: 'neutral' },
-        { label: 'Grid Export', value: `${s.total_export_kwh.toLocaleString()} kWh`, sub: `earned ${fmtDollars(s.export_credits_dollars, { cents: true })} feed-in`, cls: 'positive' },
-        { label: 'Net Cost (no battery)', value: fmtDollars(s.total_cost_without_battery_dollars, { cents: true }), sub: `after feed-in credits`, cls: 'negative' },
-        { label: 'Net Cost (with battery)', value: fmtDollars(s.total_cost_with_battery_dollars, { cents: true }), sub: `save ${fmtDollars(s.period_savings_dollars, { cents: true })} over ${s.num_days} days`, cls: 'positive' },
-        { label: p.isProjection ? 'Annual Savings (projected)' : 'Annual Savings', value: annualValue, sub: annualSub, cls: p.annual > 0 ? 'positive' : 'neutral' },
-        { label: p.isProjection ? 'Payback (projected)' : 'Payback', value: paybackValue, sub: paybackSub, cls: s.payback_years ? 'positive' : 'neutral' },
+        { icon: 'plug-zap', label: 'Grid Import', value: `${s.total_consumption_kwh.toLocaleString()} kWh`, sub: `${s.num_days} days`, cls: 'neutral' },
+        { icon: 'sun-medium', label: 'Grid Export', value: `${s.total_export_kwh.toLocaleString()} kWh`, sub: `earned ${fmtDollars(s.export_credits_dollars, { cents: true })} feed-in`, cls: 'positive' },
+        { icon: 'receipt', label: 'Net Cost (no battery)', value: fmtDollars(s.total_cost_without_battery_dollars, { cents: true }), sub: `after feed-in credits`, cls: 'negative' },
+        { icon: 'battery-charging', label: 'Net Cost (with battery)', value: fmtDollars(s.total_cost_with_battery_dollars, { cents: true }), sub: `save ${fmtDollars(s.period_savings_dollars, { cents: true })} over ${s.num_days} days`, cls: 'positive' },
+        { icon: 'piggy-bank', label: p.isProjection ? 'Annual Savings (projected)' : 'Annual Savings', value: annualValue, sub: annualSub, cls: p.annual > 0 ? 'positive' : 'neutral' },
+        { icon: 'calendar-clock', label: p.isProjection ? 'Payback (projected)' : 'Payback', value: paybackValue, sub: paybackSub, cls: s.payback_years ? 'positive' : 'neutral' },
     ];
 
     document.getElementById('summaryGrid').replaceChildren(...cards.map(c =>
         el('div', { class: `summary-card ${c.cls}` },
-            el('div', { class: 'summary-label' }, c.label),
+            el('div', { class: 'summary-label' }, icon(c.icon, { size: 15 }), el('span', {}, c.label)),
             el('div', { class: 'summary-value' }, c.value),
-            c.sub ? el('div', { class: 'summary-sub' }, c.sub) : null,
+            el('div', { class: 'summary-sub' }, c.sub || ''),
         )));
 }
 

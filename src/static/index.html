@@ -6,7 +6,7 @@
     <title>Synergy Battery Feasibility Analyser</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Instrument+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 20 20' fill='none'><rect x='2' y='4' width='16' height='12' rx='2' stroke='%234ade94' stroke-width='1.5'/><rect x='18' y='8' width='2' height='4' rx='0.5' fill='%234ade94'/><rect x='5' y='7' width='4' height='6' rx='0.5' fill='%234ade94'/><rect x='10' y='9' width='4' height='4' rx='0.5' fill='%234ade94' opacity='0.5'/></svg>">
     <link rel="stylesheet" href="/static/style.css">
     <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
@@ -34,8 +34,8 @@
             </div>
             <div class="header-right">
                 <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" title="Toggle theme">
-                    <svg class="icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
-                    <svg class="icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+                    <i data-icon="sun" data-size="18" class="icon-sun"></i>
+                    <i data-icon="moon" data-size="18" class="icon-moon"></i>
                 </button>
                 <div class="header-status" id="authStatus">
                     <span class="status-dot offline"></span>
@@ -51,6 +51,7 @@
                 <div class="card datasource-card">
                     <div class="card-header">
                         <span class="card-number"></span>
+                        <i data-icon="database" data-size="18" class="card-icon"></i>
                         <h2>Data source</h2>
                     </div>
                     <div class="field-group">
@@ -66,12 +67,13 @@
                 <div class="card auth-card" id="connectCard">
                     <div class="card-header">
                         <span class="card-number"></span>
+                        <i data-icon="log-in" data-size="18" class="card-icon"></i>
                         <h2>Connect to Synergy</h2>
                     </div>
 
                     <div class="auth-step" id="stepLogin">
                         <div class="field-hint">A browser window opens on the Synergy portal. Log in as normal (email/password + your MFA code). This app then reads your usage automatically — your password never touches this app.</div>
-                        <button id="loginBtn" class="btn btn-primary" onclick="openLogin()">Open Synergy login</button>
+                        <button id="loginBtn" class="btn btn-primary" onclick="openLogin()"><i data-icon="log-in"></i><span class="btn-label">Open Synergy login</span></button>
                         <div id="loginProgress" class="field-hint hidden">Waiting for you to finish logging in…</div>
                     </div>
 
@@ -81,7 +83,7 @@
                     </div>
 
                     <div class="auth-actions hidden" id="authActions">
-                        <button class="btn btn-outline btn-small" onclick="resetLogin()" title="Close the Synergy session so you can log in again (e.g. as a different account)">Log out / reconnect</button>
+                        <button class="btn btn-outline btn-small" onclick="resetLogin()" title="Close the Synergy session so you can log in again (e.g. as a different account)"><i data-icon="log-out" data-size="14"></i>Log out / reconnect</button>
                     </div>
                 </div>
 
@@ -89,6 +91,7 @@
                 <div class="card config-card">
                     <div class="card-header">
                         <span class="card-number"></span>
+                        <i data-icon="sliders-horizontal" data-size="18" class="card-icon"></i>
                         <h2>Analysis Parameters</h2>
                     </div>
 
@@ -173,6 +176,7 @@
                     </div>
 
                     <button id="analyseBtn" class="btn btn-accent btn-large" onclick="runAnalysis()" disabled>
+                        <i data-icon="zap"></i>
                         <span class="btn-text">Fetch &amp; Analyse</span>
                         <span class="btn-spinner hidden"></span>
                     </button>
@@ -184,7 +188,7 @@
         <section class="results-section hidden" id="resultsSection">
             <!-- Plan switcher (project a different plan on the same usage) -->
             <div class="results-plan-switch">
-                <label for="resultsPlanSelector">Project plan</label>
+                <label for="resultsPlanSelector"><i data-icon="repeat" data-size="14"></i>Project plan</label>
                 <select id="resultsPlanSelector" class="input" onchange="onResultsPlanChange()"></select>
             </div>
 
@@ -200,12 +204,12 @@
             <!-- Chart Tabs -->
             <div class="card chart-card">
                 <div class="chart-tabs" id="chartTabs">
-                    <button class="tab active" data-tab="daily">Daily Usage</button>
-                    <button class="tab" data-tab="cost">Cost Breakdown</button>
-                    <button class="tab" data-tab="solar">Import vs Export</button>
-                    <button class="tab" data-tab="battery">Battery Simulation</button>
-                    <button class="tab" data-tab="roi">ROI</button>
-                    <button class="tab" data-tab="heatmap">Heatmap</button>
+                    <button class="tab active" data-tab="daily"><i data-icon="chart-column" data-size="15"></i>Daily Usage</button>
+                    <button class="tab" data-tab="cost"><i data-icon="wallet" data-size="15"></i>Cost Breakdown</button>
+                    <button class="tab" data-tab="solar"><i data-icon="arrow-left-right" data-size="15"></i>Import vs Export</button>
+                    <button class="tab" data-tab="battery"><i data-icon="battery-medium" data-size="15"></i>Battery Simulation</button>
+                    <button class="tab" data-tab="roi"><i data-icon="trending-up" data-size="15"></i>ROI</button>
+                    <button class="tab" data-tab="heatmap"><i data-icon="calendar-days" data-size="15"></i>Heatmap</button>
                 </div>
 
                 <div class="chart-controls" id="chartControls"></div>
@@ -215,15 +219,11 @@
             <!-- Export -->
             <div class="export-bar">
                 <button class="btn btn-outline" onclick="exportCsv()">
-                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-                        <path d="M2 10v3a1 1 0 001 1h10a1 1 0 001-1v-3M8 2v9M5 8l3 3 3-3"/>
-                    </svg>
+                    <i data-icon="download"></i>
                     Export CSV
                 </button>
                 <button class="btn btn-outline" onclick="showSetup()">
-                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-                        <path d="M2 4l5 4-5 4M9 12h5"/>
-                    </svg>
+                    <i data-icon="rotate-ccw"></i>
                     New Analysis
                 </button>
             </div>
@@ -245,6 +245,7 @@
         </div>
     </div>
 
+    <script src="/static/icons.js"></script>
     <script src="/static/app.js"></script>
 </body>
 </html>
