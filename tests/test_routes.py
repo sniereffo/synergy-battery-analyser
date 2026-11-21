@@ -1042,3 +1042,18 @@ def test_sweep_extends_to_the_largest_option(client, data_dir):
 def test_battery_options_are_validated(client, body):
     response = client.post("/api/analyse", json={"cached_file": "x.json", **body})
     assert response.status_code == 422
+
+
+def test_cost_breakdown_rows_add_up(client, data_dir):
+    # Usage charges + supply charge - feed-in credits = net cost, for the
+    # no-battery column and every battery; the supply charge never changes.
+    name = _write_cache(data_dir, "year.json", _days(date(2025, 7, 1), 365))
+    data = _analyse(client, cached_file=name, batteries=THREE, grid_topup=True)
+    s, cents = data["summary"], 0.011 * 3
+    assert s["usage_cost_dollars"] + s["supply_cost_dollars"] - s["export_credits_dollars"] == \
+        pytest.approx(s["total_cost_without_battery_dollars"], abs=cents)
+    for o in data["options"]:
+        assert o["usage_cost_with_battery_dollars"] + s["supply_cost_dollars"] \
+            - o["export_credits_with_battery_dollars"] == \
+            pytest.approx(o["total_cost_with_battery_dollars"], abs=cents)
+        assert o["usage_cost_with_battery_dollars"] < s["usage_cost_dollars"]

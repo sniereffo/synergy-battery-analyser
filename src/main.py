@@ -220,6 +220,8 @@ def _battery_outcome(battery_result: list[dict], base: dict, num_days: int,
     if cost_dollars is not None and annual is not None:
         ten_year = annual * BATTERY_LIFE_YEARS - cost_dollars
     return {
+        # Grid usage charges with the battery: what you'd still buy, plus top-up.
+        "usage_cost_with": base["usage_cost"] - import_avoided + topup_cost,
         "import_avoided": import_avoided,
         "feed_in_lost": feed_in_lost,
         "topup_cost": topup_cost,
@@ -242,6 +244,7 @@ def _option_payload(capacity_kwh: float, cost_dollars: float | None, o: dict) ->
         "export_with_battery_kwh": round(o["export_with_kwh"], 2),
         "export_credits_with_battery_dollars": round(o["credits_with"] / 100, 2),
         "total_cost_with_battery_dollars": round(o["cost_with"] / 100, 2),
+        "usage_cost_with_battery_dollars": round(o["usage_cost_with"] / 100, 2),
         "import_avoided_dollars": round(o["import_avoided"] / 100, 2),
         "feed_in_lost_dollars": round(o["feed_in_lost"] / 100, 2),
         "grid_topup_cost_dollars": round(o["topup_cost"] / 100, 2),
@@ -746,7 +749,8 @@ async def _do_analysis(req: AnalyseRequest, job: dict) -> dict:
     total_export_credits = sum(e["export_credit_cents"] for e in priced)
     total_cost_without_battery = total_import_cost + total_supply_cost - total_export_credits
     base = {"cost_without": total_cost_without_battery, "import_kwh": total_consumption,
-            "export_kwh": total_export, "credits": total_export_credits}
+            "export_kwh": total_export, "credits": total_export_credits,
+            "usage_cost": total_import_cost}
 
     job["phase"] = "Comparing battery sizes…"
     results_by_option = []
@@ -818,6 +822,9 @@ async def _do_analysis(req: AnalyseRequest, job: dict) -> dict:
             "data_start": data_start.isoformat(),
             "data_end": data_end.isoformat(),
             "supply_cost_dollars": round(total_supply_cost / 100, 2),
+            # Net cost = usage charges + supply charge - feed-in credits.
+            "usage_cost_dollars": round(total_import_cost / 100, 2),
+            "usage_cost_with_battery_dollars": round(primary["usage_cost_with"] / 100, 2),
         },
         "inputs": {
             "battery_capacity_kwh": req.battery_capacity_kwh,

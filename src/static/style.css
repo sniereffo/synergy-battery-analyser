@@ -1189,3 +1189,17 @@ input[type="number"] {
 :root.dark { --neutral-accent: #94a3b8; }
 .summary-card.neutral::before { background: var(--neutral-accent); }
 .summary-card.neutral .summary-label .icon { color: var(--neutral-accent); }
+
+/* Comparison table: cost breakdown rows */
+.comparison-table .row-note {
+    display: block;
+    font-size: 0.72rem;
+    font-weight: 400;
+    color: var(--text-muted);
+}
+.comparison-table .fixed-row td { color: var(--text-secondary); }
+.comparison-table .total-row th, .comparison-table .total-row td {
+    font-weight: 600;
+    color: var(--text-primary);
+    border-top: 2px solid var(--border);
+}

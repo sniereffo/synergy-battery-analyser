@@ -1276,7 +1276,7 @@ function renderComparison() {
                 : el('span', {}, label);
             return el('th', { class: i === primary ? 'is-primary' : '' }, title, badges.length ? el('div', { class: 'badges' }, badges) : null);
         }));
-    const row = (label, base, per, hint) => el('tr', {},
+    const row = (label, base, per, hint, cls) => el('tr', { class: cls || null },
         el('th', { scope: 'row', title: hint || null }, label),
         el('td', {}, base),
         opts.map((o, i) => el('td', { class: i === primary ? 'is-primary' : '' }, per(o))));
@@ -1284,9 +1284,16 @@ function renderComparison() {
         row('Price', '—', o => (o.cost_dollars ? fmtDollars(o.cost_dollars) : 'not entered')),
         row('Grid import', kwh(s.total_consumption_kwh), o => kwh(o.import_with_battery_kwh), 'Energy bought from the grid'),
         row('Grid export', kwh(s.total_export_kwh), o => kwh(o.export_with_battery_kwh), 'Solar sent to the grid; a battery stores some of it instead'),
-        row('Feed-in credits', money(s.export_credits_dollars), o => money(o.export_credits_with_battery_dollars)),
-        row(`Net cost inc. supply @ ${money(s.supply_cost_dollars)}`, money(s.total_cost_without_battery_dollars), o => money(o.total_cost_with_battery_dollars),
-            `After feed-in credits, over ${plural(s.num_days, 'day')}. Includes the ${money(s.supply_cost_dollars)} supply charge, which is the same with or without a battery.`),
+        row('Usage charges', money(s.usage_cost_dollars), o => money(o.usage_cost_with_battery_dollars),
+            "Grid power bought at your plan's rates (with a battery, includes any grid top-up)."),
+        row(el('span', {}, 'Supply charge', el('span', { class: 'row-note' }, "fixed daily fee — a battery can't reduce it")),
+            money(s.supply_cost_dollars), () => money(s.supply_cost_dollars),
+            `Charged every day you're connected (${plural(s.num_days, 'day')} here), whatever you use. Only feed-in credits can offset it.`,
+            'fixed-row'),
+        row('Feed-in credits', `−${money(s.export_credits_dollars)}`, o => `−${money(o.export_credits_with_battery_dollars)}`,
+            'Credit for solar exported. A battery stores some of that solar, so it earns less.'),
+        row('Net cost', money(s.total_cost_without_battery_dollars), o => money(o.total_cost_with_battery_dollars),
+            `Usage charges + supply charge − feed-in credits, over ${plural(s.num_days, 'day')}.`, 'total-row'),
         row(proj ? 'Saving per year (projected)' : 'Saving per year', '—',
             o => (o.annualised_savings_dollars === null ? '—' : `${proj ? '~' : ''}${fmtDollars(o.annualised_savings_dollars)}`)),
         row('Payback', '—', o => (o.payback_years ? `${proj ? '≈ ' : ''}${o.payback_years} yrs` : (o.cost_dollars ? 'no saving' : '—'))),
