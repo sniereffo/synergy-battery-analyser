@@ -103,3 +103,22 @@ async def test_forced_browser_that_is_missing_errors_without_downloading(monkeyp
     with pytest.raises(RuntimeError, match="Could not start the login browser"):
         await _launch(monkeypatch, {"chromium"}, preferred="chrome", installs=installs)
     assert installs == []
+
+
+def test_frozen_build_keeps_browser_download_in_app_folder(monkeypatch, tmp_path):
+    monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
+    monkeypatch.setattr(cli, "app_dir", lambda: tmp_path)
+    monkeypatch.setattr(cli.sys, "frozen", True, raising=False)
+    cli.configure_frozen_browser_path()
+    assert cli.os.environ["PLAYWRIGHT_BROWSERS_PATH"] == str(tmp_path / "browsers")
+
+
+def test_non_frozen_and_explicit_browser_paths_are_left_alone(monkeypatch, tmp_path):
+    monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
+    monkeypatch.delattr(cli.sys, "frozen", raising=False)
+    cli.configure_frozen_browser_path()
+    assert "PLAYWRIGHT_BROWSERS_PATH" not in cli.os.environ
+    monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", "/custom")
+    monkeypatch.setattr(cli.sys, "frozen", True, raising=False)
+    cli.configure_frozen_browser_path()
+    assert cli.os.environ["PLAYWRIGHT_BROWSERS_PATH"] == "/custom"

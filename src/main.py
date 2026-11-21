@@ -407,8 +407,9 @@ async def open_login():
             await _close_quietly(new_client)
             raise HTTPException(
                 500,
-                f"Could not open the login browser: {_truncate(e)}. If Chromium "
-                "isn't installed yet, run: uv run playwright install chromium",
+                f"Could not open the login browser: {_truncate(e)}. The login window "
+                "uses Chrome or Edge if installed; otherwise it downloads a browser "
+                "once, which needs an internet connection.",
             )
         app.state.synergy = new_client
     return {"status": "browser_opened"}

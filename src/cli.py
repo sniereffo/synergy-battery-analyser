@@ -18,11 +18,8 @@ DEFAULT_PORT = 8000
 APP_DIR_NAME = "synergy-analyser"
 
 
-def default_data_dir() -> Path:
-    """Where saved datasets live: SYNERGY_DATA_DIR, else a per-user app folder."""
-    override = os.environ.get("SYNERGY_DATA_DIR")
-    if override:
-        return Path(override).expanduser()
+def app_dir() -> Path:
+    """Per-user folder for this app's files (saved data, downloaded browser)."""
     home = Path.home()
     if sys.platform == "win32":
         base = Path(os.environ.get("LOCALAPPDATA") or home / "AppData" / "Local")
@@ -30,7 +27,28 @@ def default_data_dir() -> Path:
         base = home / "Library" / "Application Support"
     else:
         base = Path(os.environ.get("XDG_DATA_HOME") or home / ".local" / "share")
-    return base / APP_DIR_NAME / "data"
+    return base / APP_DIR_NAME
+
+
+def default_data_dir() -> Path:
+    """Where saved datasets live: SYNERGY_DATA_DIR, else a per-user app folder."""
+    override = os.environ.get("SYNERGY_DATA_DIR")
+    if override:
+        return Path(override).expanduser()
+    return app_dir() / "data"
+
+
+def configure_frozen_browser_path() -> None:
+    """In a standalone binary, keep Playwright's downloaded browser in a
+    permanent per-user folder.
+
+    Inside a frozen build Playwright otherwise defaults to the binary's
+    temporary unpack folder, which is recreated every launch, so the one-off
+    browser download would be lost each time. Installs run with Python (uv,
+    dev) keep Playwright's normal shared location.
+    """
+    if getattr(sys, "frozen", False) and not os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
+        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(app_dir() / "browsers")
 
 
 def find_free_port(preferred: int, attempts: int = 20) -> int:
@@ -61,6 +79,7 @@ def parse_args(argv=None) -> argparse.Namespace:
 
 def main(argv=None) -> None:
     args = parse_args(argv)
+    configure_frozen_browser_path()
     data_dir = (args.data_dir or default_data_dir()).expanduser().resolve()
     data_dir.mkdir(parents=True, exist_ok=True)
 

@@ -62,7 +62,9 @@ class NotLoggedIn(RuntimeError):
 
 class SynergyBrowserClient:
     def __init__(self, headless: bool = False):
-        self._headless = headless
+        # SYNERGY_LOGIN_HEADLESS=1 hides the login window (automated checks
+        # only: a person can't log in to a window they can't see).
+        self._headless = headless or os.environ.get("SYNERGY_LOGIN_HEADLESS") == "1"
         self._pw = None
         self._browser = None
         self._context = None
@@ -81,6 +83,8 @@ class SynergyBrowserClient:
         torn down before the exception propagates.
         """
         try:
+            from .cli import configure_frozen_browser_path
+            configure_frozen_browser_path()  # no-op outside a standalone binary
             self._pw = await async_playwright().start()
             self._browser = await self._launch_browser()
             self._context = await self._browser.new_context()

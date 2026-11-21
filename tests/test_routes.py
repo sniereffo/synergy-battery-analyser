@@ -612,7 +612,7 @@ def test_open_login_failure_returns_500_and_leaves_no_client(client, monkeypatch
     assert response.status_code == 500
     detail = response.json()["detail"]
     assert "Executable doesn't exist" in detail
-    assert "uv run playwright install chromium" in detail
+    assert "Chrome or Edge" in detail and "uv run" not in detail
     assert app.state.synergy is None
     assert client.get("/api/auth/status").json()["logged_in"] is False
 
