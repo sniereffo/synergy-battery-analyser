@@ -96,6 +96,91 @@ function escapeHtml(s) {
 
 // === Init ===
 
+// === Remembered settings ===
+// The setup form and last view are kept in this browser's localStorage so a
+// page refresh doesn't lose them. Tariff rates aren't saved: they reload from
+// Synergy (or the built-in defaults) each time.
+
+const SETTINGS_KEY = 'synergy-analyser-settings-v1';
+const SAVED_FIELDS = ['inverterCapacity', 'roundTripEfficiency', 'feedInPeak', 'feedInOffPeak'];
+let restoringSettings = false;  // don't save while the form is being restored
+
+function loadSettings() {
+    try {
+        const raw = localStorage.getItem(SETTINGS_KEY);
+        return raw ? JSON.parse(raw) : null;
+    } catch (e) {
+        return null;  // storage blocked or corrupt: start from defaults
+    }
+}
+
+function saveSettings(extra = {}) {
+    if (restoringSettings) return;
+    const $ = id => document.getElementById(id);
+    const previous = loadSettings() || {};
+    const settings = {
+        ...previous,
+        dataSource: $('dataSource').value,
+        planId: $('planSelector').value,
+        startDate: $('startDate').value,
+        endDate: $('endDate').value,
+        batteries: batteryRows.map(r => ({ capacity: r.capacity, cost: r.cost })),
+        primaryBattery,
+        gridTopup: $('gridTopup').checked,
+        fields: Object.fromEntries(SAVED_FIELDS.map(id => [id, $(id).value])),
+        tab: currentTab,
+        ...extra,
+    };
+    try {
+        localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+    } catch (e) {
+        // storage full/blocked: settings just won't persist
+    }
+}
+
+// Put saved settings back into the form. Returns the saved settings (or null).
+async function restoreSettings() {
+    const saved = loadSettings();
+    if (!saved) return null;
+    const $ = id => document.getElementById(id);
+    restoringSettings = true;
+    try {
+        if (Array.isArray(saved.batteries) && saved.batteries.length) {
+            batteryRows = saved.batteries.slice(0, MAX_BATTERIES)
+                .map(r => ({ capacity: String(r.capacity ?? ''), cost: String(r.cost ?? '') }));
+            renderBatteryRows();
+        }
+        primaryBattery = Math.min(Number(saved.primaryBattery) || 0, batteryRows.length - 1);
+        Object.entries(saved.fields || {}).forEach(([id, v]) => { if ($(id) && v !== undefined) $(id).value = v; });
+        $('gridTopup').checked = !!saved.gridTopup;
+        if (saved.planId !== undefined && [...$('planSelector').options].some(o => o.value === saved.planId)) {
+            $('planSelector').value = saved.planId;
+        }
+        // A saved dataset that still exists (and is readable) is re-selected;
+        // its own date bounds apply, then the saved dates within them.
+        const file = saved.dataSource && dataFiles[saved.dataSource];
+        if (file && file.compatible !== false) {
+            $('dataSource').value = saved.dataSource;
+            onDataSourceChange();
+        }
+        if (saved.startDate) $('startDate').value = saved.startDate;
+        if (saved.endDate) $('endDate').value = saved.endDate;
+        clampDates();
+        if (saved.tab && document.querySelector(`.tab[data-tab="${saved.tab}"]`)) {
+            currentTab = saved.tab;
+            document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === saved.tab));
+        }
+    } finally {
+        restoringSettings = false;
+    }
+    return saved;
+}
+
+function resetSettings() {
+    try { localStorage.removeItem(SETTINGS_KEY); } catch (e) { /* ignore */ }
+    location.reload();
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
     hydrateIcons();
     renderBatteryRows();
@@ -113,6 +198,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     ['startDate', 'endDate'].forEach(id =>
         document.getElementById(id).addEventListener('change', clampDates));
 
+    // Remember the setup form as it's edited.
+    ['input', 'change'].forEach(ev =>
+        document.getElementById('setupSection').addEventListener(ev, () => saveSettings()));
+
     // Tab switching
     document.getElementById('chartTabs').addEventListener('click', (e) => {
         const tab = e.target.closest('.tab');  // clicks may land on the icon
@@ -120,6 +209,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
             tab.classList.add('active');
             currentTab = tab.dataset.tab;
+            saveSettings();
             renderChart();
         }
     });
@@ -131,8 +221,14 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Fetch rate schedules, plans and cached data files, then render the rates.
     await Promise.all([fetchRateSchedules(), fetchPlans(), fetchDataFiles()]);
-    refreshRates({ force: true });
+    const saved = await restoreSettings();
+    await refreshRates({ force: true });
     checkInitialStatus();
+    // Re-open the last results if they came from a saved dataset (instant, no
+    // Synergy login needed). A live fetch is never started automatically.
+    if (saved && saved.view === 'results' && document.getElementById('dataSource').value) {
+        runAnalysis();
+    }
 });
 
 // YYYY-MM-DD in local time (toISOString would shift to UTC).
@@ -689,6 +785,7 @@ function addBatteryRow() {
     if (batteryRows.length >= MAX_BATTERIES) return;
     batteryRows.push({ capacity: '', cost: '' });
     renderBatteryRows();
+    saveSettings();
     const inputs = document.querySelectorAll('#batteryOptions .battery-row input');
     inputs[inputs.length - 2]?.focus();
 }
@@ -697,6 +794,7 @@ function removeBatteryRow(i) {
     batteryRows.splice(i, 1);
     if (primaryBattery >= batteryRows.length) primaryBattery = 0;
     renderBatteryRows();
+    saveSettings();
 }
 
 // Read the battery rows -> {batteries} or {error, input}. Rows left entirely
@@ -844,6 +942,7 @@ async function runAnalysis() {
                 onDataSourceChange();
             }
         }
+        saveSettings({ view: 'results' });
     } catch (e) {
         hideProgressModal();
         if (e.code === 'not_logged_in') {
@@ -942,6 +1041,7 @@ function showResults() {
 }
 
 function showSetup() {
+    saveSettings({ view: 'setup' });
     document.getElementById('setupSection').classList.remove('hidden');
     document.getElementById('resultsSection').classList.add('hidden');
     if (currentChart) {

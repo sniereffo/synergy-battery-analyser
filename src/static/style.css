@@ -1136,3 +1136,8 @@ input[type="number"] {
     text-underline-offset: 3px;
 }
 .link-btn:hover { color: var(--accent-green); }
+
+/* === Setup footer (remembered settings) === */
+.form-footer { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 10px; }
+.form-footer .field-hint { margin: 0; }
+.form-footer .link-btn { font-size: 0.8rem; color: var(--text-secondary); }
