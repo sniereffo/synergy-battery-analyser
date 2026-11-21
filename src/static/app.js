@@ -952,8 +952,8 @@ function renderSummary() {
     const cards = [
         { icon: 'plug-zap', label: 'Grid Import', value: `${s.total_consumption_kwh.toLocaleString()} kWh`, sub: `${s.num_days} days`, cls: 'neutral' },
         { icon: 'sun-medium', label: 'Grid Export', value: `${s.total_export_kwh.toLocaleString()} kWh`, sub: `earned ${fmtDollars(s.export_credits_dollars, { cents: true })} feed-in`, cls: 'positive' },
-        { icon: 'receipt', label: 'Net Cost', title: 'Net cost without a battery (after feed-in credits)', value: fmtDollars(s.total_cost_without_battery_dollars, { cents: true }), sub: 'without battery', cls: 'negative' },
-        { icon: 'battery-charging', label: 'Net Cost', title: 'Net cost with a battery (after feed-in credits)', value: fmtDollars(s.total_cost_with_battery_dollars, { cents: true }), sub: 'with battery', cls: 'positive' },
+        { icon: 'receipt', label: 'Net Cost', title: 'Net cost without a battery (after feed-in credits)', value: fmtDollars(s.total_cost_without_battery_dollars, { cents: true }), sub: ['without battery', 'after feed-in credits'], cls: 'negative' },
+        { icon: 'receipt', label: 'Net Cost', title: 'Net cost with a battery (after feed-in credits)', value: fmtDollars(s.total_cost_with_battery_dollars, { cents: true }), sub: ['with battery', 'after feed-in credits'], cls: 'positive' },
         { icon: 'piggy-bank', label: 'Annual Savings', title: p.isProjection ? 'Projected to 12 months from a shorter range' : null, value: annualValue, sub: annualSub, cls: p.annual > 0 ? 'positive' : 'neutral' },
         { icon: 'calendar-clock', label: 'Payback', title: p.isProjection ? 'Projected from a shorter range' : null, value: paybackValue, sub: paybackSub, cls: s.payback_years ? 'positive' : 'neutral' },
     ];
@@ -962,7 +962,9 @@ function renderSummary() {
         el('div', { class: `summary-card ${c.cls}`, title: c.title || null },
             el('div', { class: 'summary-label' }, icon(c.icon, { size: 15 }), el('span', {}, c.label)),
             el('div', { class: 'summary-value' }, c.value),
-            el('div', { class: 'summary-sub' }, c.sub || ''),
+            // sub may be a string or an array of lines
+            el('div', { class: 'summary-sub' },
+                [].concat(c.sub || '').flatMap((line, i) => (i ? [el('br'), line] : [line]))),
         )));
 }
 
