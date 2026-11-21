@@ -122,3 +122,60 @@ def test_non_frozen_and_explicit_browser_paths_are_left_alone(monkeypatch, tmp_p
     monkeypatch.setattr(cli.sys, "frozen", True, raising=False)
     cli.configure_frozen_browser_path()
     assert cli.os.environ["PLAYWRIGHT_BROWSERS_PATH"] == "/custom"
+
+
+# --- single instance / quit ---
+
+class _Health:
+    def __init__(self, body):
+        self.body = body
+
+    def __enter__(self):
+        import io
+        return io.BytesIO(self.body)
+
+    def __exit__(self, *a):
+        return False
+
+
+@pytest.mark.parametrize("body,expected", [
+    (b'{"status": "ok", "app": "synergy-analyser"}', True),
+    (b'{"status": "ok"}', False),          # some other app on the port
+    (b"<html>not json</html>", False),
+])
+def test_running_instance_recognises_only_this_app(monkeypatch, body, expected):
+    monkeypatch.setattr(cli.urllib.request, "urlopen", lambda url, timeout: _Health(body))
+    assert cli.running_instance(8000) is expected
+
+
+def test_running_instance_false_when_nothing_listens(monkeypatch):
+    def refuse(url, timeout):
+        raise ConnectionRefusedError
+    monkeypatch.setattr(cli.urllib.request, "urlopen", refuse)
+    assert cli.running_instance(8000) is False
+
+
+def test_second_launch_opens_the_running_copy(monkeypatch, tmp_path):
+    opened = []
+    monkeypatch.setattr(cli, "running_instance", lambda port: True)
+    monkeypatch.setattr(cli.webbrowser, "open", opened.append)
+    cli.main(["--data-dir", str(tmp_path), "--port", "8123"])  # returns instead of serving
+    assert opened == ["http://127.0.0.1:8123"]
+
+
+def test_say_without_a_console(monkeypatch):
+    monkeypatch.setattr(cli.sys, "stdout", None)  # e.g. the Mac app
+    cli.say("hello")  # must not raise
+
+
+def test_missing_streams_go_to_a_log_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "app_dir", lambda: tmp_path / "app")
+    monkeypatch.setattr(cli.sys, "stdout", None)
+    monkeypatch.setattr(cli.sys, "stderr", None)
+    cli.ensure_output_streams()
+    cli.say("started")
+    cli.sys.stderr.write("driver output\n")
+    text = (tmp_path / "app" / "app.log").read_text()
+    assert "started" in text and "driver output" in text
+    assert cli.sys.stderr.fileno() >= 0  # a real file, as Playwright's driver needs
+    cli.sys.stdout.close()

@@ -183,6 +183,7 @@ function resetSettings() {
 
 document.addEventListener('DOMContentLoaded', async () => {
     hydrateIcons();
+    showQuitButton();
     renderBatteryRows();
     // Default date range: the last 12 months (end = yesterday, the last full
     // day; start = end − 364 days). A full year captures seasonal variation,
@@ -460,6 +461,34 @@ function onDataSourceChange() {
 }
 
 // === Toast ===
+
+// Quit: only when the app was started by its launcher (the download or
+// `synergy-analyser`), which is the only way to stop the Mac app.
+async function showQuitButton() {
+    try {
+        const health = await (await fetch('/api/health')).json();
+        document.getElementById('quitBtn').hidden = !health.can_quit;
+    } catch (_) { /* leave it hidden */ }
+}
+
+async function quitApp() {
+    if (!confirm('Stop the Synergy Battery Analyser?\n\nYour fetched data and settings are kept for next time.')) return;
+    try {
+        const r = await fetch('/api/quit', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+        if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
+    } catch (e) {
+        toast(`Couldn't stop the app: ${e.message}`, 'error');
+        return;
+    }
+    // Keep the header; replace everything below it.
+    const app = document.querySelector('.app');
+    [...app.children].forEach(c => { if (!c.matches('header')) c.remove(); });
+    document.getElementById('quitBtn').hidden = true;
+    document.getElementById('authStatus').hidden = true;
+    app.append(el('div', { class: 'stopped' },
+        el('h1', {}, 'The app has stopped'),
+        el('p', {}, 'You can close this tab. Open the app again whenever you want to come back.')));
+}
 
 function toast(msg, type = '') {
     const node = document.getElementById('toast');

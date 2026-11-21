@@ -6,10 +6,12 @@ matter which folder it's started from), and opens the app in the browser.
 """
 
 import argparse
+import json
 import os
 import socket
 import sys
 import threading
+import urllib.request
 import webbrowser
 from pathlib import Path
 
@@ -77,11 +79,55 @@ def parse_args(argv=None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+def running_instance(port: int) -> bool:
+    """True if this app is already serving on `port` (e.g. the Mac app was
+    opened again while it was still running)."""
+    try:
+        with urllib.request.urlopen(f"http://{HOST}:{port}/api/health", timeout=1) as r:
+            return json.load(r).get("app") == APP_DIR_NAME
+    except Exception:  # noqa: BLE001 — anything else on the port, or nothing
+        return False
+
+
+def ensure_output_streams() -> None:
+    """Give a console-less build (the Mac app) somewhere to write.
+
+    Without a console, stdout/stderr can be missing, and Playwright's driver
+    needs a real stream; app.log in the app folder also helps with support.
+    """
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+    folder = app_dir()
+    folder.mkdir(parents=True, exist_ok=True)
+    log = open(folder / "app.log", "a", buffering=1, encoding="utf-8")  # noqa: SIM115 — lives for the process
+    if sys.stdout is None:
+        sys.stdout = log
+    if sys.stderr is None:
+        sys.stderr = log
+
+
+def say(*lines: str) -> None:
+    """Print to the console window, if there is one (the Mac app has none)."""
+    if sys.stdout is None:
+        return
+    for line in lines:
+        print(line)
+    sys.stdout.flush()
+
+
 def main(argv=None) -> None:
     args = parse_args(argv)
+    ensure_output_streams()
     configure_frozen_browser_path()
     data_dir = (args.data_dir or default_data_dir()).expanduser().resolve()
     data_dir.mkdir(parents=True, exist_ok=True)
+
+    if running_instance(args.port):
+        url = f"http://{HOST}:{args.port}"
+        say("Synergy Battery Feasibility Analyser is already running.", f"  Open:        {url}")
+        if not args.no_browser:
+            webbrowser.open(url)
+        return
 
     import uvicorn
 
@@ -91,15 +137,18 @@ def main(argv=None) -> None:
     port = find_free_port(args.port)
     url = f"http://{HOST}:{port}"
 
-    print("Synergy Battery Feasibility Analyser")
-    print(f"  Open:        {url}")
-    print(f"  Saved data:  {data_dir}")
-    print("  Stop:        press Ctrl+C (or close this window)")
-    sys.stdout.flush()
+    server = uvicorn.Server(uvicorn.Config(app_module.app, host=HOST, port=port, log_level="warning"))
+    # The page's Quit button stops the server the same way Ctrl+C does.
+    app_module.quit_app = lambda: setattr(server, "should_exit", True)
+
+    say("Synergy Battery Feasibility Analyser",
+        f"  Open:        {url}",
+        f"  Saved data:  {data_dir}",
+        "  Stop:        click Quit in the app, press Ctrl+C, or close this window")
 
     if not args.no_browser:
         threading.Timer(1.0, webbrowser.open, args=[url]).start()
-    uvicorn.run(app_module.app, host=HOST, port=port, log_level="warning")
+    server.run()
 
 
 if __name__ == "__main__":

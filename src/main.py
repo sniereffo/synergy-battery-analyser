@@ -1,7 +1,7 @@
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 from typing import Annotated
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -114,6 +114,10 @@ else:
 # "data/" relative to the current working directory (run from the repo root).
 # Referenced at call time, so tests can monkeypatch it.
 DATA_DIR = Path(os.environ.get("SYNERGY_DATA_DIR") or "data")
+
+# Set by the launcher (cli.py) to a function that stops the server. None when
+# run any other way (uvicorn --reload, tests): the page then hides its Quit button.
+quit_app = None
 
 
 # --- Request models ---
@@ -300,7 +304,21 @@ def _recommend(priced: list[dict], req: "AnalyseRequest", base: dict, num_days: 
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok"}
+    # `app` lets the launcher recognise an already-running copy of itself.
+    return {"status": "ok", "app": "synergy-analyser", "can_quit": quit_app is not None}
+
+
+@app.post("/api/quit")
+async def quit_route(request: Request):
+    # JSON only: another website can send a plain form POST to localhost, but a
+    # JSON one needs a CORS preflight, which this app never grants.
+    if request.headers.get("content-type", "").split(";")[0].strip() != "application/json":
+        raise HTTPException(415, "Send this request as JSON.")
+    if quit_app is None:
+        raise HTTPException(409, "This copy of the app wasn't started by the launcher; stop it where it was started.")
+    # Stop shortly after replying, so the page gets its answer.
+    asyncio.get_running_loop().call_later(0.3, quit_app)
+    return {"status": "stopping"}
 
 
 @app.get("/api/rate-schedules")

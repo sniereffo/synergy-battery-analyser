@@ -34,24 +34,43 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 
-exe = EXE(
-    pyz,
-    a.scripts,
-    a.binaries,
-    a.datas,
-    [],
-    name='synergy-battery-analyser',
+NAME = 'synergy-battery-analyser'
+common = dict(
+    name=NAME,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,  # UPX can break the bundled Node binary
-    upx_exclude=[],
-    runtime_tmpdir=None,
-    console=True,  # the console window shows the URL and how to stop the app
-    disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
-    codesign_identity=None,
+    codesign_identity=None,  # PyInstaller ad-hoc signs, which Apple Silicon requires
     entitlements_file=None,
     icon=ICON,
 )
+
+if sys.platform == 'darwin':
+    # macOS only shows an icon on a .app, so the Mac build is
+    # "Synergy Battery Analyser.app" (a folder build; one-file .apps are
+    # deprecated). No console window: the page's Quit button stops it, and
+    # LSUIElement keeps it out of the Dock, where a non-Cocoa app would
+    # otherwise sit looking unresponsive.
+    exe = EXE(pyz, a.scripts, [], exclude_binaries=True, console=False,
+              disable_windowed_traceback=False, **common)
+    coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name=NAME)
+    app = BUNDLE(
+        coll,
+        name='Synergy Battery Analyser.app',
+        icon=ICON,
+        bundle_identifier='io.github.sniereffo.synergy-battery-analyser',
+        info_plist={
+            'CFBundleDisplayName': 'Synergy Battery Analyser',
+            'LSUIElement': True,
+            'NSHighResolutionCapable': True,
+        },
+    )
+else:
+    # Windows / Linux: one file, with a console window that shows the address
+    # and how to stop the app.
+    exe = EXE(pyz, a.scripts, a.binaries, a.datas, [],
+              upx_exclude=[], runtime_tmpdir=None, console=True,
+              disable_windowed_traceback=False, **common)

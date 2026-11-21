@@ -161,6 +161,39 @@ body::before {
     border-color: var(--text-muted);
 }
 
+.header-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 36px;
+    padding: 0 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    font: inherit;
+    font-size: 0.85rem;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.header-btn:hover {
+    color: var(--text-primary);
+    border-color: var(--text-muted);
+}
+
+.header-btn[hidden],
+.header-status[hidden] { display: none; }
+
+.stopped {
+    max-width: 480px;
+    margin: 20vh auto 0;
+    text-align: center;
+}
+
+.stopped h1 { font-size: 1.3rem; margin-bottom: 8px; }
+.stopped p { color: var(--text-secondary); }
+
 /* Show sun in dark mode, moon in light mode */
 .icon-moon { display: block; }
 .icon-sun { display: none; }

@@ -28,15 +28,15 @@ There are two ways to run it. Both open the app in your web browser; nothing is 
 
 1. Download the file for your computer from the [Releases](https://github.com/sniereffo/synergy-battery-analyser/releases) page:
    - Windows: `synergy-battery-analyser-windows.exe`
-   - Mac (Apple Silicon): `synergy-battery-analyser-macos`
+   - Mac (Apple Silicon): `synergy-battery-analyser-macos.zip`. Open the zip and move **Synergy Battery Analyser** to your Applications folder.
    - Linux: `synergy-battery-analyser-linux`
-2. Run it. A small console window opens and the app opens in your browser.
-3. To stop the app, close the console window (or press Ctrl+C in it).
+2. Run it. The app opens in your browser. On Windows and Linux a small console window also opens. The Mac app runs quietly in the background, with no window or Dock icon.
+3. To stop the app, click **Quit** at the top of the page. On Windows and Linux you can also close the console window. If you close the browser tab without quitting, open the app again to get back to it.
 
 The first time you open it, your computer may warn you because the app isn't signed by a paid developer certificate:
 
 - **Windows:** on the "Windows protected your PC" screen, click **More info**, then **Run anyway**.
-- **Mac:** after the first attempt is blocked, open **System Settings → Privacy & Security** and click **Open Anyway**. You may also need to make it executable first: `chmod +x synergy-battery-analyser-macos` in Terminal.
+- **Mac:** after the first attempt is blocked, open **System Settings → Privacy & Security** and click **Open Anyway**.
 - **Linux:** make it executable (`chmod +x synergy-battery-analyser-linux`), then run it.
 
 ### Option 2: run it with uv
@@ -126,6 +126,7 @@ These are estimates for personal planning based on your past usage. They're not 
 - **A saved dataset is greyed out and marked "Old format".** It was saved by the version before Synergy changed its website in April 2026 and can't be read. Fetch the data again.
 - **Fewer days than you asked for.** Synergy only keeps a limited amount of history, and nothing before you moved in. The results cover the days returned, and a note lists any missing dates.
 - **Port already in use.** The app picks the next free port automatically and shows the address in its window.
+- **The Mac app doesn't seem to open.** It has no window of its own. It opens your browser at `http://127.0.0.1:8000`. If it's already running, opening it again just brings the page back. Its log is in `~/Library/Application Support/synergy-analyser/app.log`.
 
 ## Development
 
@@ -160,7 +161,7 @@ uv sync --group dev --no-editable --reinstall-package synergy-analyser
 uv run --no-sync pyinstaller --noconfirm synergy-battery-analyser.spec   # -> dist/
 ```
 
-The binary starts from `packaging/launcher.py` and bundles Playwright's driver, but no browser (see [About the Synergy login window](#about-the-synergy-login-window)). The [Release workflow](.github/workflows/release.yml) builds and smoke-tests Linux, Windows and macOS binaries. Run it manually for test builds, or push a `v*` tag to create a draft release.
+The binary starts from `packaging/launcher.py` and bundles Playwright's driver, but no browser (see [About the Synergy login window](#about-the-synergy-login-window)). On macOS the spec builds `Synergy Battery Analyser.app` (no console, hidden from the Dock); elsewhere a single file with a console. Icons come from `packaging/icon/icon.svg`; `packaging/icon/build.sh` regenerates them. The [Release workflow](.github/workflows/release.yml) builds and smoke-tests Linux, Windows and macOS binaries. Run it manually for test builds, or push a `v*` tag to create a draft release.
 
 ## License
 

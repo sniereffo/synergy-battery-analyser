@@ -143,7 +143,37 @@ class FakeClient:
 def test_health_endpoint(client):
     response = client.get("/api/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    assert response.json() == {"status": "ok", "app": "synergy-analyser", "can_quit": False}
+
+
+def test_quit_needs_the_launcher(client):
+    # Run under uvicorn/tests there is nothing to stop it with.
+    r = client.post("/api/quit", json={})
+    assert r.status_code == 409
+
+
+def test_quit_rejects_non_json(client, monkeypatch):
+    # A cross-site form POST can't stop the app.
+    calls = []
+    monkeypatch.setattr(main, "quit_app", lambda: calls.append(1))
+    r = client.post("/api/quit", data={"x": "1"})
+    assert r.status_code == 415
+    assert calls == []
+
+
+def test_quit_stops_the_server(client, monkeypatch):
+    import time
+    calls = []
+    monkeypatch.setattr(main, "quit_app", lambda: calls.append(1))
+    assert client.get("/api/health").json()["can_quit"] is True
+    r = client.post("/api/quit", json={})
+    assert r.status_code == 200 and r.json() == {"status": "stopping"}
+    # Stops just after replying (TestClient's loop runs in a background thread).
+    for _ in range(50):
+        if calls:
+            break
+        time.sleep(0.02)
+    assert calls == [1]
 
 
 def test_rate_schedules_endpoint(client):
