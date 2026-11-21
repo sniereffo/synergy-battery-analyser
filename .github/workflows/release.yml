@@ -1,12 +1,17 @@
-# LIMITATION (packaging parked): the PyInstaller spec does not bundle
-# Playwright's driver or Chromium, so binaries built here cannot log in to the
-# new Synergy portal. To avoid publishing broken releases, the tag trigger has
-# been disabled and this workflow runs only via manual workflow_dispatch.
-# Restore the `push: tags` trigger once packaging is fixed.
+# Builds the standalone binaries (Linux, Windows, macOS) and smoke-tests each
+# one on its own OS: the app starts and serves, a sample dataset analyses, and
+# the Synergy login window opens (hidden).
+#
+# - Run manually (Actions -> Release -> Run workflow) to build test binaries;
+#   download them from the run's artifacts. Nothing is published.
+# - Push a tag like v2.0.0 to build and create a DRAFT GitHub release with the
+#   binaries attached. Review it, then press Publish.
 name: Release
 
 on:
   workflow_dispatch:
+  push:
+    tags: ["v*"]
 
 jobs:
   test:
@@ -14,40 +19,79 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.14"
       - run: uv sync --group dev
-      - run: uv run pytest -v
+      - run: uv run pytest -q
 
   build:
     needs: test
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
             suffix: linux
-          - os: macos-latest
+            exe: synergy-battery-analyser
+          - os: macos-latest      # Apple Silicon
             suffix: macos
+            exe: synergy-battery-analyser
           - os: windows-latest
             suffix: windows
+            exe: synergy-battery-analyser.exe
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.14"
-      - run: uv sync --group dev
-      - run: uv run pyinstaller synergy-battery-analyser.spec
 
-      - name: Rename artifact (Linux/macOS)
-        if: runner.os != 'Windows'
-        run: mv dist/synergy-battery-analyser dist/synergy-battery-analyser-${{ matrix.suffix }}
+      # Install the app normally (not editable) so PyInstaller can find it.
+      - run: uv sync --group dev --no-editable
+      - run: uv run --no-sync pyinstaller --noconfirm synergy-battery-analyser.spec
 
-      - name: Rename artifact (Windows)
-        if: runner.os == 'Windows'
-        run: mv dist/synergy-battery-analyser.exe dist/synergy-battery-analyser-${{ matrix.suffix }}.exe
+      - name: Smoke test the binary
+        env:
+          SYNERGY_LOGIN_HEADLESS: "1"
+        run: |
+          set -euo pipefail
+          DATA="$RUNNER_TEMP/data"; mkdir -p "$DATA"
+          # A one-day saved dataset built from the test fixture.
+          uv run --no-sync python - "$DATA" <<'PY'
+          import json, sys
+          from pathlib import Path
+          from synergy_analyser.chartdata import parse_halfhourly_response
+          raw = json.loads(Path("tests/fixtures/chartdata_halfhourly_day.json").read_text())
+          ivs = [{**i, "timestamp": i["timestamp"].isoformat()} for i in parse_halfhourly_response(raw)]
+          Path(sys.argv[1], "sample.json").write_text(json.dumps({"tariff_label": "EV2 TARIFF", "intervals": ivs}))
+          PY
+          "dist/${{ matrix.exe }}" --no-browser --port 8411 --data-dir "$DATA" > "$RUNNER_TEMP/app.log" 2>&1 &
+          for i in $(seq 1 60); do curl -sf http://127.0.0.1:8411/api/health && break; sleep 1; done
+          cat "$RUNNER_TEMP/app.log"
+          curl -sf -o /dev/null http://127.0.0.1:8411/
+          curl -sf -o /dev/null http://127.0.0.1:8411/static/icons.js
+          curl -sf -X POST http://127.0.0.1:8411/api/analyse -H 'content-type: application/json' \
+               -d '{"cached_file":"sample.json","batteries":[{"capacity_kwh":10}]}'
+          for i in $(seq 1 60); do
+            STATUS=$(curl -sf http://127.0.0.1:8411/api/analyse/progress | uv run --no-sync python -c "import sys,json;print(json.load(sys.stdin)['status'])")
+            [ "$STATUS" = done ] && break
+            [ "$STATUS" = error ] && { echo "analysis failed"; exit 1; }
+            sleep 1
+          done
+          [ "$STATUS" = done ]
+          # Open the login window (hidden): proves the bundled Playwright driver
+          # can start a browser (the runner's Chrome, else a one-off Chromium).
+          curl -sf -m 600 -X POST http://127.0.0.1:8411/api/auth/open-login
+          curl -sf http://127.0.0.1:8411/api/auth/status
+          curl -sf -X POST http://127.0.0.1:8411/api/auth/reset
+          echo "smoke test passed"
+
+      - name: Rename binary
+        run: |
+          if [ "${{ runner.os }}" = Windows ]; then
+            mv dist/synergy-battery-analyser.exe dist/synergy-battery-analyser-windows.exe
+          else
+            mv dist/synergy-battery-analyser "dist/synergy-battery-analyser-${{ matrix.suffix }}"
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
@@ -55,6 +99,7 @@ jobs:
           path: dist/synergy-battery-analyser-${{ matrix.suffix }}*
 
   release:
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-latest
     permissions:
@@ -64,9 +109,10 @@ jobs:
         with:
           merge-multiple: true
 
-      - name: Create release
+      - name: Create draft release
         uses: softprops/action-gh-release@v2
         with:
+          draft: true
           generate_release_notes: true
           files: |
             synergy-battery-analyser-linux
