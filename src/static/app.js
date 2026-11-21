@@ -952,8 +952,8 @@ function renderSummary() {
     const cards = [
         { icon: 'plug-zap', label: 'Grid Import', value: `${s.total_consumption_kwh.toLocaleString()} kWh`, sub: `${s.num_days} days`, cls: 'neutral' },
         { icon: 'sun-medium', label: 'Grid Export', value: `${s.total_export_kwh.toLocaleString()} kWh`, sub: `earned ${fmtDollars(s.export_credits_dollars, { cents: true })} feed-in`, cls: 'positive' },
-        { icon: 'receipt', label: 'No battery', title: 'Net cost without a battery', value: fmtDollars(s.total_cost_without_battery_dollars, { cents: true }), sub: `net cost, after feed-in credits`, cls: 'negative' },
-        { icon: 'battery-charging', label: 'With battery', title: 'Net cost with a battery', value: fmtDollars(s.total_cost_with_battery_dollars, { cents: true }), sub: `net cost, saving ${fmtDollars(s.period_savings_dollars, { cents: true })} over ${plural(s.num_days, 'day')}`, cls: 'positive' },
+        { icon: 'receipt', label: 'Net Cost', title: 'Net cost without a battery (after feed-in credits)', value: fmtDollars(s.total_cost_without_battery_dollars, { cents: true }), sub: 'without battery', cls: 'negative' },
+        { icon: 'battery-charging', label: 'Net Cost', title: 'Net cost with a battery (after feed-in credits)', value: fmtDollars(s.total_cost_with_battery_dollars, { cents: true }), sub: 'with battery', cls: 'positive' },
         { icon: 'piggy-bank', label: 'Annual Savings', title: p.isProjection ? 'Projected to 12 months from a shorter range' : null, value: annualValue, sub: annualSub, cls: p.annual > 0 ? 'positive' : 'neutral' },
         { icon: 'calendar-clock', label: 'Payback', title: p.isProjection ? 'Projected from a shorter range' : null, value: paybackValue, sub: paybackSub, cls: s.payback_years ? 'positive' : 'neutral' },
     ];
@@ -1105,7 +1105,7 @@ function renderCostBreakdown() {
     });
 
     // Feed-in credits (negative), so the total is net like the summary's
-    // "No battery" net cost.
+    // "Net Cost — without battery" card.
     if (hasCredits) {
         series.push({
             name: 'Feed-in credit',
