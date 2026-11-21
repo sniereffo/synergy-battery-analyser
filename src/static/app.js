@@ -1178,7 +1178,7 @@ function renderSummary() {
           sub: typeof s.export_credits_with_battery_dollars === 'number'
               ? [`without battery: ${fmtDollars(s.export_credits_dollars, { cents: true })}`,
                  `with battery: ${fmtDollars(s.export_credits_with_battery_dollars, { cents: true })}`]
-              : `earned ${fmtDollars(s.export_credits_dollars, { cents: true })} feed-in`, cls: 'positive' },
+              : `earned ${fmtDollars(s.export_credits_dollars, { cents: true })} feed-in`, cls: 'solar' },
         { icon: 'receipt', label: 'Net Cost', title: 'Net cost without a battery (after feed-in credits)', value: fmtDollars(s.total_cost_without_battery_dollars, { cents: true }), sub: ['without battery', 'after feed-in credits'], cls: 'negative' },
         { icon: 'receipt', label: 'Net Cost', title: 'Net cost with a battery (after feed-in credits)', value: fmtDollars(s.total_cost_with_battery_dollars, { cents: true }), sub: ['with battery', 'after feed-in credits'], cls: 'positive' },
         { icon: 'piggy-bank', label: 'Annual Savings', title: p.isProjection ? 'Projected to 12 months from a shorter range' : null, value: annualValue, sub: annualSub, cls: p.annual > 0 ? 'positive' : 'neutral' },

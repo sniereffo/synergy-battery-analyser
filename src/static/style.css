@@ -1177,3 +1177,9 @@ input[type="number"] {
 }
 .fine-print ul { margin: 0; padding-left: 16px; }
 .fine-print li { margin-bottom: 4px; }
+
+/* Solar (Grid Export) card: yellow, matching the solar series in the charts. */
+:root { --solar: #eab308; }
+:root.dark { --solar: #facc15; }
+.summary-card.solar::before { background: var(--solar); }
+.summary-card.solar .summary-label .icon { color: var(--solar); }
